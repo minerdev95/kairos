@@ -227,6 +227,26 @@ fn main() {
                 _ => eprintln!("usage: kairos kaspa-mine <stratum-url> <kaspa-wallet[.worker]> [seconds] --yes"),
             }
         }
+        "mine" => {
+            // Unified, algorithm-organized miner: `mine <algo> <url> <wallet> [secs] --yes`.
+            let algo = args.get(1).cloned();
+            let url = args.get(2).cloned();
+            let wallet = args.get(3).cloned();
+            let secs: u64 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(180);
+            match (algo, url, wallet) {
+                (Some(a), Some(u), Some(w)) if consent => print_mine(&a, &u, &w, secs),
+                (Some(_), Some(_), Some(_)) => eprintln!("`mine` submits REAL shares — re-run with --yes to confirm."),
+                _ => {
+                    eprintln!("usage: kairos mine <algorithm> <stratum-url> <wallet[.worker]> [seconds] --yes\n");
+                    eprintln!("  algorithms (any pool/coin on that algorithm works):");
+                    eprintln!("    autolykos2   Ergo (ERG)         GPU     ✓ mineable");
+                    eprintln!("    kheavyhash   Kaspa (KAS)        CPU/GPU experimental");
+                    eprintln!("    sha256d      BTC · BCH · DGB    CPU/GPU ✓ mineable");
+                    eprintln!("    scrypt       LTC · DOGE · DGB   CPU     ✓ mineable");
+                    eprintln!("  coin aliases accepted too, e.g.  kairos mine erg <url> <wallet> --yes");
+                }
+            }
+        }
         "erg-selftest" => {
             print_erg_selftest();
         }
@@ -442,6 +462,8 @@ fn print_help() {
         "KAIROS — intelligent mining control plane\n\n\
          USAGE: kairos <command> [options]\n\n\
          COMMANDS:\n\
+         \x20 mine <algo> <url> <wallet> --yes   MINE by algorithm (any pool/coin on it)\n\
+         \x20              algos: autolykos2 (ERG·GPU) · kheavyhash (KAS) · sha256d · scrypt\n\
          \x20 gui          open the native desktop app window (default on double-click)\n\
          \x20 start        run the control plane (twin); --live [--yes] to mine for real\n\
          \x20 status       the console summary, once\n\
@@ -461,7 +483,8 @@ fn print_help() {
          \x20 earnings     value + credit ledgers (net, uplift, by lever)\n\
          \x20 bench / tune auto-benchmark + per-chip tuning report\n\
          \x20 config       show the effective configuration\n\
-         \x20 kaspa-verify <url> <wallet>   handshake a Kaspa pool + parse a job (no shares)\n\
+         \x20 erg-verify / kaspa-verify / etc-verify <url> <wallet>   check a pool (no shares)\n\
+         \x20 erg-selftest                  prove the GPU Autolykos2 kernel vs the Ergo KAT\n\
          \x20 asic scan <ip|subnet/24>      discover ASICs via the CGMiner API (port 4028)\n\
          \x20 asic status <ip> [ip...]      per-ASIC hashrate/temp/shares/pool\n\
          \x20 asic switch <ip> <url> <user> --yes   repoint an ASIC at a pool\n\
@@ -694,6 +717,111 @@ fn print_poolcheck(url: &str, user: &str) {
             println!("  connect/handshake failed: {e}");
             println!("  check the URL/port, or the pool may use a protocol KAIROS doesn't support yet.");
         }
+    }
+}
+
+/// Unified algorithm-organized miner. Pick an algorithm; any pool/coin on it works.
+/// Dispatches to KAIROS's own verified engines and reports accepted/rejected shares.
+fn print_mine(algo: &str, url: &str, wallet: &str, secs: u64) {
+    use kairos::engine::{NativeMiner, PoolSession, SessionShared};
+    use kairos::pow::PowKind;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Kind {
+        Auto,
+        Heavy,
+        Sha,
+        Scrypt,
+        Ethash,
+        Unknown,
+    }
+    let kind = match algo.trim().to_ascii_lowercase().as_str() {
+        "autolykos2" | "autolykos" | "erg" | "ergo" => Kind::Auto,
+        "kheavyhash" | "heavyhash" | "kaspa" | "kas" => Kind::Heavy,
+        "sha256d" | "sha-256d" | "sha256" | "sha-256" | "btc" | "bitcoin" | "bch" | "dgb" => Kind::Sha,
+        "scrypt" | "ltc" | "litecoin" | "doge" | "dogecoin" => Kind::Scrypt,
+        "ethash" | "etchash" | "etc" => Kind::Ethash,
+        _ => Kind::Unknown,
+    };
+    if kind == Kind::Unknown {
+        eprintln!("unknown algorithm '{algo}'. Try: autolykos2, kheavyhash, sha256d, scrypt.");
+        return;
+    }
+    if kind == Kind::Ethash {
+        eprintln!("Ethash/ETC: the algorithm is KAT-verified but GPU DAG mining isn't wired yet");
+        eprintln!("(8 GB cards can't hold the ~8 GB DAG). Check a pool with `kairos etc-verify`.");
+        return;
+    }
+    let label = match kind {
+        Kind::Auto => "Autolykos2 · Ergo (ERG) · GPU",
+        Kind::Heavy => "kHeavyHash · Kaspa (KAS) · experimental",
+        Kind::Sha => "SHA-256d · BTC/BCH/DGB",
+        Kind::Scrypt => "scrypt · LTC/DOGE/DGB",
+        _ => "",
+    };
+    println!("KAIROS MINE  [{label}]  (submits REAL shares, {secs}s)");
+    println!("  pool   : {url}");
+    println!("  wallet : {wallet}\n");
+    if kind == Kind::Auto && !kairos::gpu::gpu_feature_enabled() {
+        println!("  Autolykos2 (Ergo) needs the GPU backend — rebuild with `--features gpu`.");
+        return;
+    }
+
+    let shared = Arc::new(SessionShared::default());
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let workers = std::thread::available_parallelism().map(|n| n.get().saturating_sub(1).max(1)).unwrap_or(1);
+    let (u, w, sh) = (url.to_string(), wallet.to_string(), shared.clone());
+    let handle = std::thread::spawn(move || -> std::io::Result<()> {
+        match kind {
+            Kind::Auto => kairos::erg::run(&u, &w, "x", &sh, Some(deadline)),
+            Kind::Heavy => kairos::kaspa::run(&u, &w, "x", workers, &sh, Some(deadline)),
+            Kind::Sha | Kind::Scrypt => {
+                let pow = if kind == Kind::Sha { PowKind::Sha256d } else { PowKind::Scrypt };
+                let miner = NativeMiner::start(workers, None);
+                let r = PoolSession::run(&u, &w, "x", pow, &miner, "kairos/0.1.0", &sh, Some(deadline));
+                miner.stop();
+                r
+            }
+            _ => Ok(()),
+        }
+    });
+
+    let start = Instant::now();
+    while start.elapsed().as_secs() < secs {
+        std::thread::sleep(Duration::from_secs(5));
+        println!(
+            "  [{:3}s] connected={} hashrate={} submitted={} accepted={} rejected={}",
+            start.elapsed().as_secs(),
+            shared.connected.load(Ordering::Relaxed),
+            hh(shared.hashrate()),
+            shared.submitted.load(Ordering::Relaxed),
+            shared.accepted.load(Ordering::Relaxed),
+            shared.rejected.load(Ordering::Relaxed),
+        );
+    }
+    shared.stop.store(true, Ordering::SeqCst);
+    let res = handle.join().ok();
+    let acc = shared.accepted.load(Ordering::Relaxed);
+    let rej = shared.rejected.load(Ordering::Relaxed);
+    let sub = shared.submitted.load(Ordering::Relaxed);
+    println!("\n  RESULT: submitted {sub}, accepted {acc}, rejected {rej}");
+    if let Some(Err(e)) = res {
+        println!("  session ended: {e}");
+    }
+    if let Ok(err) = shared.last_error.lock() {
+        if let Some(e) = err.as_ref() {
+            println!("  last pool message: {e}");
+        }
+    }
+    if acc > 0 {
+        println!("  ✓ shares ACCEPTED — this algorithm is mining end-to-end.");
+    } else if rej > 0 {
+        println!("  ✗ shares submitted but REJECTED — share this output to diagnose.");
+    } else {
+        println!("  … no shares yet in {secs}s (difficulty vs hashrate) — try a longer run.");
     }
 }
 
