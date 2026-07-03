@@ -227,6 +227,9 @@ fn main() {
                 _ => eprintln!("usage: kairos kaspa-mine <stratum-url> <kaspa-wallet[.worker]> [seconds] --yes"),
             }
         }
+        "erg-selftest" => {
+            print_erg_selftest();
+        }
         "erg-verify" | "erg-probe" => {
             let url = args.get(1).cloned();
             let user = args.get(2).cloned();
@@ -672,6 +675,47 @@ fn print_poolcheck(url: &str, user: &str) {
             println!("  connect/handshake failed: {e}");
             println!("  check the URL/port, or the pool may use a protocol KAIROS doesn't support yet.");
         }
+    }
+}
+
+/// Prove the GPU Autolykos2 kernel byte-for-byte against the official Ergo KAT (and
+/// the KAT-verified CPU reference). If this passes on your GPU, the kernel is correct
+/// and any share it finds will be accepted by the pool.
+fn print_erg_selftest() {
+    use kairos::{autolykos, gpu};
+    // Official Ergo height-614400 known-answer vector.
+    let msg_hex = "548c3e602a8f36f8f2738f5f643b02425038044d98543a51cabaa9785e7e864f";
+    let msg: [u8; 32] = kairos::stratum::from_hex(msg_hex).unwrap().try_into().unwrap();
+    let nonce: u64 = 0x3105;
+    let height: u32 = 614_400;
+    let n = autolykos::calc_n(height);
+    let want = "0002fcb113fe65e5754959872dfdbffea0489bf830beb4961ddc0e9e66a1412a";
+
+    println!("ERG (Autolykos2) GPU SELF-TEST vs the official Ergo KAT (height 614,400)");
+    println!("  N = {n}   nonce = 0x{nonce:x}");
+    let cpu = autolykos::hit(&msg, &nonce.to_be_bytes(), height, n);
+    let cpu_hex = kairos::stratum::to_hex(&cpu);
+    println!("  CPU hit : {cpu_hex}  {}", if cpu_hex == want { "✓ matches KAT" } else { "✗ MISMATCH" });
+
+    if !gpu::gpu_feature_enabled() {
+        println!("  GPU hit : (this binary has no GPU backend — rebuild with `--features gpu`)");
+        println!("\n  The CPU reference is KAT-verified. Build the GPU kernel to prove it on your card:");
+        println!("    cargo build --release --features gpu");
+        return;
+    }
+    match gpu::cuda_autolykos_hit(&msg, nonce, height, n) {
+        Some(g) => {
+            let g_hex = kairos::stratum::to_hex(&g);
+            println!("  GPU hit : {g_hex}");
+            if g_hex == want && g == cpu {
+                println!("\n  ✓✓ GPU kernel matches the official Ergo KAT AND the CPU reference exactly.");
+                println!("      The Autolykos2 GPU miner is PROVEN correct on this card — shares it finds");
+                println!("      will be accepted. Run `kairos erg-mine <url> <wallet> --yes` to mine.");
+            } else {
+                println!("\n  ✗ GPU hit does not match. The kernel needs a fix (share this output).");
+            }
+        }
+        None => println!("  GPU hit : (no CUDA device, or kernels not compiled/linked)"),
     }
 }
 

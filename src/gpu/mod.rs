@@ -32,6 +32,36 @@ pub fn gpu_feature_enabled() -> bool {
     cfg!(feature = "gpu")
 }
 
+/// Compute one Autolykos2 (Ergo) hit on the GPU. Used by the `erg-selftest` to prove
+/// the CUDA kernel matches the KAT-verified CPU reference byte-for-byte. `None`
+/// without the `gpu` feature.
+#[allow(unused_variables)]
+pub fn cuda_autolykos_hit(msg: &[u8; 32], nonce: u64, height: u32, n: u64) -> Option<[u8; 32]> {
+    #[cfg(feature = "gpu")]
+    {
+        imp::autolykos_hit(msg, nonce, height, n)
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        None
+    }
+}
+
+/// Search a u64 nonce range for an Ergo Autolykos2 share on the GPU, returning the
+/// winning nonce only after re-verifying it on the CPU (KAT-verified `autolykos::hit`)
+/// against the target — so a bad kernel can't submit an accepted-but-wrong share.
+#[allow(unused_variables)]
+pub fn cuda_autolykos_search(msg: &[u8; 32], height: u32, n: u64, target: &[u8; 32], start: u64, count: u64) -> Option<u64> {
+    #[cfg(feature = "gpu")]
+    {
+        imp::autolykos_search(msg, height, n, target, start, count)
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        None
+    }
+}
+
 /// Search a u64 nonce range for a Kaspa share on the GPU using the EXACT Kaspa
 /// kHeavyHash kernel, with the rank-64 job matrix precomputed on the host. Returns
 /// the winning nonce ONLY after re-verifying it on the CPU (so a miscompiled kernel
@@ -88,6 +118,51 @@ mod imp {
             count: u64,
             out_nonce: *mut u64,
         ) -> i32;
+        fn kairos_cuda_autolykos_hit(
+            msg32: *const u8,
+            nonce: u64,
+            height: u32,
+            n: u64,
+            out_hit32: *mut u8,
+        ) -> i32;
+        fn kairos_cuda_autolykos_search(
+            msg32: *const u8,
+            height: u32,
+            n: u64,
+            target32: *const u8,
+            start: u64,
+            count: u64,
+            out_nonce: *mut u64,
+        ) -> i32;
+    }
+
+    /// One Autolykos2 hit on the GPU (self-test).
+    pub fn autolykos_hit(msg: &[u8; 32], nonce: u64, height: u32, n: u64) -> Option<[u8; 32]> {
+        let mut out = [0u8; 32];
+        let ok = unsafe { kairos_cuda_autolykos_hit(msg.as_ptr(), nonce, height, n, out.as_mut_ptr()) };
+        if ok == 1 {
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    /// GPU Autolykos2 search + CPU re-verification of the winning nonce.
+    pub fn autolykos_search(msg: &[u8; 32], height: u32, n: u64, target: &[u8; 32], start: u64, count: u64) -> Option<u64> {
+        let mut nonce: u64 = 0;
+        let hit = unsafe {
+            kairos_cuda_autolykos_search(msg.as_ptr(), height, n, target.as_ptr(), start, count, &mut nonce)
+        };
+        if hit != 1 {
+            return None;
+        }
+        // Re-verify on the CPU (KAT-verified reference): hit < target as 32-byte BE.
+        let h = crate::autolykos::hit(msg, &nonce.to_be_bytes(), height, n);
+        if &h <= target {
+            Some(nonce)
+        } else {
+            None
+        }
     }
 
     /// GPU Kaspa search + CPU re-verification of the winning nonce.

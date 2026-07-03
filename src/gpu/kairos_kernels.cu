@@ -281,6 +281,199 @@ __global__ void k_kaspa(const uint8_t* pre_pow, unsigned long long timestamp,
   }
 }
 
+// ───────────────────── BLAKE2b + Autolykos2 (Ergo) ─────────────────────
+// KAIROS's own GPU Autolykos2, mirroring the KAT-verified CPU reference in
+// src/autolykos.rs. Elements are computed on the fly (no multi-GB table), so it
+// fits any GPU; `kairos_cuda_autolykos_hit` recomputes the official Ergo KAT on the
+// device for a byte-exact self-test before any mining is trusted.
+
+__constant__ uint64_t AL_IV[8] = {
+  0x6a09e667f3bcc908ULL,0xbb67ae8584caa73bULL,0x3c6ef372fe94f82bULL,0xa54ff53a5f1d36f1ULL,
+  0x510e527fade682d1ULL,0x9b05688c2b3e6c1fULL,0x1f83d9abfb41bd6bULL,0x5be0cd19137e2179ULL
+};
+__constant__ uint8_t AL_SIGMA[12][16] = {
+  {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15},
+  {14,10,4,8,9,15,13,6,1,12,0,2,11,7,5,3},
+  {11,8,12,0,5,2,15,13,10,14,3,6,7,1,9,4},
+  {7,9,3,1,13,12,11,14,2,6,5,10,4,0,15,8},
+  {9,0,5,7,2,4,10,15,14,1,11,12,6,8,3,13},
+  {2,12,6,10,0,11,8,3,4,13,7,5,15,14,1,9},
+  {12,5,1,15,14,13,4,10,0,7,6,3,9,2,8,11},
+  {13,11,7,14,12,1,3,9,5,0,15,4,8,6,2,10},
+  {6,15,14,9,11,3,0,8,12,2,13,7,1,4,10,5},
+  {10,2,8,4,7,6,1,5,15,11,9,14,3,12,13,0},
+  {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15},
+  {14,10,4,8,9,15,13,6,1,12,0,2,11,7,5,3}
+};
+
+__device__ __forceinline__ uint64_t al_rotr64(uint64_t x, int n){ return (x>>n)|(x<<(64-n)); }
+__device__ __forceinline__ uint64_t al_load64le(const uint8_t* p){
+  uint64_t r=0;
+  #pragma unroll
+  for(int i=0;i<8;i++) r |= ((uint64_t)p[i])<<(8*i);
+  return r;
+}
+__device__ __forceinline__ void al_g(uint64_t* v,int a,int b,int c,int d,uint64_t x,uint64_t y){
+  v[a]=v[a]+v[b]+x; v[d]=al_rotr64(v[d]^v[a],32);
+  v[c]=v[c]+v[d];   v[b]=al_rotr64(v[b]^v[c],24);
+  v[a]=v[a]+v[b]+y; v[d]=al_rotr64(v[d]^v[a],16);
+  v[c]=v[c]+v[d];   v[b]=al_rotr64(v[b]^v[c],63);
+}
+__device__ void al_compress(uint64_t* h, const uint8_t* blk, uint64_t t, int last){
+  uint64_t m[16], v[16];
+  #pragma unroll
+  for(int i=0;i<16;i++) m[i]=al_load64le(blk+i*8);
+  #pragma unroll
+  for(int i=0;i<8;i++){ v[i]=h[i]; v[i+8]=AL_IV[i]; }
+  v[12]^=t;
+  if(last) v[14]^=0xffffffffffffffffULL;
+  for(int r=0;r<12;r++){
+    const uint8_t* s=AL_SIGMA[r];
+    al_g(v,0,4,8,12,m[s[0]],m[s[1]]);
+    al_g(v,1,5,9,13,m[s[2]],m[s[3]]);
+    al_g(v,2,6,10,14,m[s[4]],m[s[5]]);
+    al_g(v,3,7,11,15,m[s[6]],m[s[7]]);
+    al_g(v,0,5,10,15,m[s[8]],m[s[9]]);
+    al_g(v,1,6,11,12,m[s[10]],m[s[11]]);
+    al_g(v,2,7,8,13,m[s[12]],m[s[13]]);
+    al_g(v,3,4,9,14,m[s[14]],m[s[15]]);
+  }
+  #pragma unroll
+  for(int i=0;i<8;i++) h[i]^=v[i]^v[i+8];
+}
+// BLAKE2b over an in-memory buffer, outlen<=32.
+__device__ void al_blake(const uint8_t* in, uint32_t inlen, uint8_t* out, uint32_t outlen){
+  uint64_t h[8];
+  #pragma unroll
+  for(int i=0;i<8;i++) h[i]=AL_IV[i];
+  h[0]^=0x01010000UL^outlen;
+  uint64_t t=0; uint32_t i=0; uint8_t blk[128];
+  while(inlen - i > 128){ t+=128; al_compress(h, in+i, t, 0); i+=128; }
+  for(int j=0;j<128;j++) blk[j] = (i+(uint32_t)j < inlen) ? in[i+j] : 0;
+  t += (inlen - i);
+  al_compress(h, blk, t, 1);
+  for(uint32_t j=0;j<outlen;j++) out[j] = (uint8_t)((h[j>>3] >> (8*(j&7))) & 0xff);
+}
+// Byte p of the element message idx(4,BE) || height(4,BE) || M(8192).
+__device__ __forceinline__ uint8_t al_elem_byte(uint32_t p, uint32_t idx, const uint8_t* h4){
+  if(p<4) return (uint8_t)((idx >> (8*(3-p))) & 0xff);
+  if(p<8) return h4[p-4];
+  if(p<8200){ uint32_t mi=p-8; uint64_t i=mi>>3; int bp=mi&7; return (uint8_t)((i >> (8*(7-bp))) & 0xff); }
+  return 0;
+}
+// genElement(idx) = blake2b256(idx||h||M) with the leading byte dropped (31 bytes).
+__device__ void al_element(uint32_t idx, const uint8_t* h4, uint8_t out31[31]){
+  uint64_t h[8];
+  #pragma unroll
+  for(int i=0;i<8;i++) h[i]=AL_IV[i];
+  h[0]^=0x01010000UL^32;
+  uint64_t t=0; uint8_t blk[128];
+  for(int b=0;b<64;b++){
+    for(int j=0;j<128;j++) blk[j]=al_elem_byte(b*128+j, idx, h4);
+    t+=128; al_compress(h, blk, t, 0);
+  }
+  for(int j=0;j<128;j++) blk[j]=al_elem_byte(8192+j, idx, h4); // final: 8 valid bytes
+  t+=8; al_compress(h, blk, t, 1);
+  uint8_t full[32];
+  for(int i=0;i<32;i++) full[i]=(uint8_t)((h[i>>3]>>(8*(i&7)))&0xff);
+  for(int i=0;i<31;i++) out31[i]=full[i+1];
+}
+__device__ void al_indexes(const uint8_t* seed, uint32_t seedlen, uint64_t N, uint32_t idxs[32]){
+  uint8_t hash[32]; al_blake(seed, seedlen, hash, 32);
+  uint8_t ext[35];
+  for(int i=0;i<32;i++) ext[i]=hash[i];
+  ext[32]=hash[0]; ext[33]=hash[1]; ext[34]=hash[2];
+  for(int i=0;i<32;i++){
+    uint32_t v=((uint32_t)ext[i]<<24)|((uint32_t)ext[i+1]<<16)|((uint32_t)ext[i+2]<<8)|((uint32_t)ext[i+3]);
+    idxs[i]=(uint32_t)(((uint64_t)v) % N);
+  }
+}
+// acc(32B BE) += val(31B BE, right-aligned).
+__device__ void al_add(uint8_t acc[32], const uint8_t* val31){
+  uint32_t carry=0;
+  for(int i=31;i>=0;i--){
+    uint32_t a=acc[i];
+    uint32_t b=(i>=1)?val31[i-1]:0;
+    uint32_t s=a+b+carry;
+    acc[i]=(uint8_t)(s&0xff); carry=s>>8;
+  }
+}
+// The Autolykos2 hit for (msg, 8-byte nonce, height, N).
+__device__ void al_hit(const uint8_t* msg32, const uint8_t* nonce8, uint32_t height, uint64_t N, uint8_t out32[32]){
+  uint8_t h4[4]; h4[0]=(height>>24)&0xff; h4[1]=(height>>16)&0xff; h4[2]=(height>>8)&0xff; h4[3]=height&0xff;
+  uint8_t b0[40];
+  for(int i=0;i<32;i++) b0[i]=msg32[i];
+  for(int i=0;i<8;i++) b0[32+i]=nonce8[i];
+  uint8_t hh[32]; al_blake(b0, 40, hh, 32);
+  uint64_t prei8=0; for(int i=0;i<8;i++) prei8=(prei8<<8)|hh[24+i];
+  uint32_t ival=(uint32_t)(prei8 % N);
+  uint8_t f31[31]; al_element(ival, h4, f31);
+  uint8_t seed[71];
+  for(int i=0;i<31;i++) seed[i]=f31[i];
+  for(int i=0;i<32;i++) seed[31+i]=msg32[i];
+  for(int i=0;i<8;i++) seed[63+i]=nonce8[i];
+  uint32_t idxs[32]; al_indexes(seed, 71, N, idxs);
+  uint8_t sum[32]; for(int i=0;i<32;i++) sum[i]=0;
+  for(int k=0;k<32;k++){ uint8_t e[31]; al_element(idxs[k], h4, e); al_add(sum, e); }
+  al_blake(sum, 32, out32, 32);
+}
+__device__ __forceinline__ void al_nonce_be(uint64_t nonce, uint8_t out[8]){
+  for(int i=0;i<8;i++) out[i]=(uint8_t)((nonce>>(8*(7-i)))&0xff);
+}
+// Single-hit kernel for the self-test.
+__global__ void k_autolykos_one(const uint8_t* msg32, unsigned long long nonce, unsigned int height,
+                                unsigned long long N, uint8_t* out32){
+  if(blockIdx.x*blockDim.x+threadIdx.x != 0) return;
+  uint8_t n8[8]; al_nonce_be(nonce, n8);
+  al_hit(msg32, n8, height, N, out32);
+}
+// Search kernel: each thread tests one nonce = start+idx (extranonce is in the high bits of start).
+__global__ void k_autolykos_search(const uint8_t* msg32, unsigned int height, unsigned long long N,
+                                   const uint8_t* target32, unsigned long long start, unsigned long long count,
+                                   unsigned long long* out_nonce, int* found){
+  unsigned long long i = (unsigned long long)blockIdx.x*blockDim.x + threadIdx.x;
+  if(i>=count) return;
+  unsigned long long nonce = start + i;
+  uint8_t n8[8]; al_nonce_be(nonce, n8);
+  uint8_t hit[32]; al_hit(msg32, n8, height, N, hit);
+  int cmp=0;
+  for(int j=0;j<32;j++){ if(hit[j]<target32[j]){cmp=-1;break;} if(hit[j]>target32[j]){cmp=1;break;} }
+  if(cmp<=0){ if(atomicCAS(found,0,1)==0) *out_nonce=nonce; }
+}
+
+extern "C" int kairos_cuda_autolykos_hit(const unsigned char* msg32, unsigned long long nonce,
+    unsigned int height, unsigned long long N, unsigned char* out_hit32){
+  uint8_t *d_msg=0,*d_out=0;
+  cudaMalloc(&d_msg,32); cudaMalloc(&d_out,32);
+  cudaMemcpy(d_msg,msg32,32,cudaMemcpyHostToDevice);
+  k_autolykos_one<<<1,1>>>(d_msg,nonce,height,N,d_out);
+  cudaDeviceSynchronize();
+  cudaError_t err=cudaGetLastError();
+  cudaMemcpy(out_hit32,d_out,32,cudaMemcpyDeviceToHost);
+  cudaFree(d_msg); cudaFree(d_out);
+  return err==cudaSuccess ? 1 : 0;
+}
+
+extern "C" int kairos_cuda_autolykos_search(const unsigned char* msg32, unsigned int height,
+    unsigned long long N, const unsigned char* target32, unsigned long long start,
+    unsigned long long count, unsigned long long* out_nonce){
+  uint8_t *d_msg=0,*d_tgt=0; unsigned long long* d_nonce=0; int* d_found=0;
+  cudaMalloc(&d_msg,32); cudaMalloc(&d_tgt,32);
+  cudaMalloc(&d_nonce,sizeof(unsigned long long)); cudaMalloc(&d_found,4);
+  cudaMemcpy(d_msg,msg32,32,cudaMemcpyHostToDevice);
+  cudaMemcpy(d_tgt,target32,32,cudaMemcpyHostToDevice);
+  cudaMemset(d_found,0,4); cudaMemset(d_nonce,0,sizeof(unsigned long long));
+  int threads=64; unsigned long long blocks=(count+threads-1)/threads;
+  k_autolykos_search<<<(unsigned int)blocks,threads>>>(d_msg,height,N,d_tgt,start,count,d_nonce,d_found);
+  cudaDeviceSynchronize();
+  int found=0; unsigned long long nonce=0;
+  cudaMemcpy(&found,d_found,4,cudaMemcpyDeviceToHost);
+  cudaMemcpy(&nonce,d_nonce,sizeof(unsigned long long),cudaMemcpyDeviceToHost);
+  cudaFree(d_msg); cudaFree(d_tgt); cudaFree(d_nonce); cudaFree(d_found);
+  if(found){ *out_nonce=nonce; return 1; }
+  return 0;
+}
+
 // ───────────────────────── Host launchers (C linkage) ─────────────────────────
 
 extern "C" int kairos_cuda_device_count(){
