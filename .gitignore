@@ -1,0 +1,23 @@
+# Build output
+/target
+**/*.rs.bk
+*.pdb
+# NB: Cargo.lock IS committed — KAIROS is an application, so a pinned lockfile
+# gives reproducible builds.
+
+# Local runtime state
+.kairos-instance
+
+# Private developer overlay — the owner's dev-fee addresses + admin passphrase
+# hash + telemetry endpoint. NEVER commit this. The template (dev.toml.example)
+# is tracked; the real file is not.
+/dev/dev.toml
+# The plaintext admin passphrase (only the sha256 goes in dev.toml). NEVER commit.
+/dev/admin-passphrase.txt
+
+# Release binaries are attached to GitHub Releases, not committed to the source
+# tree. Keep the folder structure + its README; ignore the built artifacts.
+/dist
+/releases/**/*.zip
+/releases/**/*.tar.gz
+/releases/windows/kairos-*/

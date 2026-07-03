@@ -1,0 +1,32 @@
+<svg width="560" height="128" viewBox="0 0 560 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="KAIROS — intelligent mining control plane">
+  <title>KAIROS</title>
+  <desc>The KAIROS wordmark with a geometric monogram: four ascending bars and a rising trajectory culminating in an accent node — rising value seized at the opportune moment.</desc>
+  <style>
+    .kx-ink { fill: #0B1220; }
+    .kx-sub { fill: #5A6B82; }
+    .kx-bar { fill: #0B1220; }
+    @media (prefers-color-scheme: dark) {
+      .kx-ink { fill: #EAF1FB; }
+      .kx-sub { fill: #8A99B2; }
+      .kx-bar { fill: #EAF1FB; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="acc" x1="90" y1="16" x2="118" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#19E6B4"/>
+      <stop offset="1" stop-color="#0FA884"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(14,16) scale(0.82)">
+    <path d="M30 84 L48 72 L66 58 L84 42 L102 30" fill="none" stroke="#14C8A0" stroke-width="2.6"
+          stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>
+    <rect x="24" y="84" width="12" height="14" rx="6" class="kx-bar"/>
+    <rect x="42" y="72" width="12" height="26" rx="6" class="kx-bar"/>
+    <rect x="60" y="58" width="12" height="40" rx="6" class="kx-bar"/>
+    <rect x="78" y="42" width="12" height="56" rx="6" class="kx-bar"/>
+    <circle cx="102" cy="30" r="15" fill="#14C8A0" opacity="0.14"/>
+    <path d="M102 16 L116 30 L102 44 L88 30 Z" fill="url(#acc)"/>
+  </g>
+  <text class="kx-ink" x="150" y="73" font-family="'Segoe UI',Helvetica,Arial,sans-serif" font-size="49" font-weight="600" letter-spacing="9">KAIROS</text>
+  <text class="kx-sub" x="153" y="100" font-family="'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" font-weight="500" letter-spacing="4.6">INTELLIGENT MINING CONTROL PLANE</text>
+</svg>

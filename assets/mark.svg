@@ -1,0 +1,30 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="KAIROS mark">
+  <title>KAIROS mark</title>
+  <desc>The KAIROS monogram: four ascending bars and a rising trajectory culminating in an accent node — value rising and seized at the opportune moment (kairos) — on a dark rounded tile.</desc>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#111A2B"/>
+      <stop offset="1" stop-color="#0A1018"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" y1="98" x2="0" y2="40" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#AEBAD0"/>
+      <stop offset="1" stop-color="#EAF1FB"/>
+    </linearGradient>
+    <linearGradient id="acc" x1="90" y1="16" x2="118" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#19E6B4"/>
+      <stop offset="1" stop-color="#0FA884"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="128" height="128" rx="30" fill="url(#tile)"/>
+  <!-- rising trajectory through the bar tops to the accent node -->
+  <path d="M30 84 L48 72 L66 58 L84 42 L102 30" fill="none" stroke="#14C8A0" stroke-width="2.4"
+        stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+  <!-- four ascending bars -->
+  <rect x="24" y="84" width="12" height="14" rx="6" fill="url(#bar)"/>
+  <rect x="42" y="72" width="12" height="26" rx="6" fill="url(#bar)"/>
+  <rect x="60" y="58" width="12" height="40" rx="6" fill="url(#bar)"/>
+  <rect x="78" y="42" width="12" height="56" rx="6" fill="url(#bar)"/>
+  <!-- the kairos moment: accent node with a soft ring -->
+  <circle cx="102" cy="30" r="15" fill="#14C8A0" opacity="0.14"/>
+  <path d="M102 16 L116 30 L102 44 L88 30 Z" fill="url(#acc)"/>
+</svg>

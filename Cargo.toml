@@ -1,0 +1,52 @@
+[package]
+name = "kairos"
+version = "0.1.0"
+edition = "2021"
+description = "KAIROS — an intelligent mining control plane. The layer above the hasher that decides what to mine, when, where, on which hardware, at which clock and power, with which pools, hedged how, to maximize the operator's risk-adjusted profit."
+license = "LicenseRef-KAIROS-Proprietary"
+publish = false
+readme = "README.md"
+
+build = "build.rs"
+
+[[bin]]
+name = "kairos"
+path = "src/main.rs"
+
+[lib]
+name = "kairos"
+path = "src/lib.rs"
+
+[features]
+# The native desktop GUI (egui window). On by default so `kairos.exe` opens the
+# app window; `--no-default-features` builds a lean CLI-only binary (used by CI).
+default = ["gui"]
+gui = ["dep:eframe"]
+# GPU hashing via KAIROS's own CUDA kernels (src/gpu/*.cu). Off by default: it
+# requires the CUDA toolkit (nvcc) at build time and an NVIDIA GPU at run time.
+# The CPU engine is the always-available, self-contained default.
+gpu = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+# Native GUI (optional; enabled by the `gui` feature). eframe = egui + the native
+# windowing/renderer, so the app is a real desktop window, not a browser.
+eframe = { version = "0.28", optional = true, default-features = true }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+# Strip symbols from the release binary: smaller, and no function/symbol names to
+# ease reverse-engineering or locating the dev-fee logic for tampering.
+strip = "symbols"
+
+[profile.dev]
+opt-level = 0

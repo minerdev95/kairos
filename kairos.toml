@@ -1,0 +1,102 @@
+# kairos.toml — the only file an operator needs to touch.
+# Everything below the first two blocks is optional; defaults are auto-tuned.
+# KAIROS asks for payout wallets and one risk word and does the rest.
+
+[operator]
+risk = "balanced"               # conservative | balanced | aggressive
+# equity_usd = 250000           # starting equity for the drawdown-aware utility + ruin gate
+# obligations_usd_per_day = 400 # fixed power + rent the ruin floor must keep equity above
+
+[wallets]
+BTC = "bc1qexampledemowallet"
+KAS = "kaspa:qrdemo"
+ERG = "9fRusdemo"
+ETC = "0xetcdemo"
+
+[economics]
+power_cost_usd_kwh = 0.10        # your electricity price — drives every profit decision
+min_profit_usd_day = 0.0         # only mine when the best option clears this net USD/day
+
+# ----- optional; defaults are auto-tuned ------------------------------------
+
+# Pools — the familiar miner shape (pool URL + wallet/worker username + pass),
+# like T-Rex / lolMiner / HiveOS. By default KAIROS auto-selects the best pool per
+# coin and uses your wallet (above) as the username. Pin pools explicitly here to
+# override; add several per coin with a `priority` for primary/backup failover.
+#
+# [[pool]]
+# coin     = "KAS"
+# url      = "stratum+tcp://kas.woolypooly.com:3112"
+# user     = "kaspa:qr..."        # defaults to [wallets].KAS if omitted
+# worker   = "rig-tx01"           # appended as user.worker
+# pass     = "x"
+# scheme   = "fpps"               # fpps | pplns | pps | prop | solo
+# priority = 0                    # lower = primary; next is the backup
+#
+# [[pool]]
+# coin     = "KAS"
+# url      = "stratum+tcp://pool.kas.fyi:4444"
+# priority = 1                    # backup, fails over automatically
+
+# [power]                                        # per-site power caps (MW)
+# cap_mw = { "TX-01" = 2.0, "IS-02" = 0.8 }
+
+# [energy]
+# demand_response = true                         # sell interruptibility to the grid
+# pause_above_usd_mwh = 120                       # throttle when power gets this expensive
+
+# [thermal]                                       # temperature protection (overrides all)
+# stop_c = 83                                     # force-idle at/above this temp
+# start_c = 65                                    # resume once cooled below this
+# fan = "auto"                                    # "auto" or a fixed percentage
+
+# [watchdog]                                      # self-healing behaviour
+# restart_on_hang = true
+# max_rejects_pct = 3.0                           # roll back + fail over above this reject rate
+
+# [stratum]
+# nicehash_mode = false
+# proxy = ""
+# target_share_hz = 0.2                           # vardiff target submitted shares/sec
+
+# [devices]
+# exclude = ["TX-01/g099"]                        # device ids to leave out of the fleet
+
+# [alerts]                                        # delivered via system curl
+# webhook = "https://hooks.example.com/..."       # generic JSON webhook ({"text": "..."})
+# telegram_token = "123456:ABC..."
+# telegram_chat = "987654321"
+# min_severity = "warn"                           # info | warn | critical
+
+# Rules / triggers — "if this then notify" (Awesome-Miner style). Built-in
+# offline + overheat alerts are always on; these add your own thresholds.
+# [[trigger]]
+# name = "hot-gpu"
+# metric = "temp"        # temp | reject | hashrate | offline | energy
+# op = "gt"              # gt | lt
+# value = 75             # temp >75C
+# severity = "warn"
+#
+# [[trigger]]
+# name = "high-rejects"
+# metric = "reject"      # reject rate %
+# op = "gt"
+# value = 2.0
+# severity = "warn"
+
+# [schedule]                                       # time-of-day off-peak pause
+# pause_hours = [18, 19, 20, 21]                   # idle the fleet during peak tariff hours
+
+# [api]
+# bind = "127.0.0.1:4280"                         # live dashboard + JSON metrics
+
+# [logging]
+# level = "info"                                  # error | warn | info | debug
+# file = ""                                       # empty = stdout
+
+# [sim]                                            # twin run controls (this build)
+# seed = 6332419556551434753
+# ticks = 1320                                     # 22 h at 60 s ticks
+# scenarios = true                                 # adversarial scenario schedule
+
+# KAIROS never holds keys or moves funds; payouts go to your wallets above.

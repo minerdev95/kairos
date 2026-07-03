@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KAIROS · control plane</title>
+<style>
+  :root{
+    --bg:#0a0d12; --panel:#10151d; --panel2:#141b25; --line:#1d2632;
+    --txt:#e8eefc; --mut:#8493a8; --dim:#5b6878;
+    --acc:#14c8a0; --acc2:#0fa884; --warn:#f2b15a; --bad:#ef6e6e; --good:#56d6a0;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:"Segoe UI",-apple-system,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:var(--sans);font-size:13px;-webkit-font-smoothing:antialiased}
+  a{color:var(--acc);text-decoration:none}
+  .wrap{max-width:1280px;margin:0 auto;padding:22px 24px 60px}
+  header{display:flex;align-items:center;gap:22px;flex-wrap:wrap;margin-bottom:20px}
+  .brand{display:flex;align-items:center;gap:13px}
+  .wordmark{font:600 19px/1 var(--sans);letter-spacing:.16em;color:#eaf1fb}
+  .tag{font:500 9.5px/1.5 var(--sans);letter-spacing:.24em;color:var(--dim);margin-top:4px}
+  .spacer{flex:1}
+  .hero{text-align:right}
+  .hero .n{font:600 34px/1 var(--mono);color:#f3f7ff}
+  .hero .n span{font-size:15px;color:var(--mut);font-weight:400}
+  .badge{display:inline-flex;align-items:center;gap:6px;margin-top:7px;padding:4px 10px;border-radius:999px;
+    background:rgba(20,200,160,.12);color:var(--acc);font:600 12px/1 var(--mono);border:1px solid rgba(20,200,160,.25)}
+  .badge.neg{background:rgba(239,110,110,.1);color:var(--bad);border-color:rgba(239,110,110,.25)}
+  .live{display:flex;align-items:center;gap:7px;color:var(--mut);font:500 11px/1 var(--mono)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 0 rgba(20,200,160,.5);animation:pulse 2s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(20,200,160,.5)}70%{box-shadow:0 0 0 7px rgba(20,200,160,0)}100%{box-shadow:0 0 0 0 rgba(20,200,160,0)}}
+  .meta{display:flex;gap:18px;color:var(--mut);font:500 11px/1.6 var(--mono);flex-wrap:wrap}
+  .meta b{color:var(--txt);font-weight:600}
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+  .kpi .k{color:var(--dim);font:600 10px/1 var(--sans);letter-spacing:.12em;text-transform:uppercase}
+  .kpi .v{margin-top:8px;font:600 18px/1 var(--mono);color:var(--txt)}
+  .kpi .s{margin-top:4px;font:500 11px/1 var(--mono);color:var(--mut)}
+  .grid{display:grid;grid-template-columns:1.55fr 1fr;gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:16px}
+  .card h2{margin:0;padding:13px 16px 11px;font:600 11px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--mut);border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+  .card h2 .c{color:var(--dim);font-weight:500;letter-spacing:.04em;text-transform:none}
+  table{width:100%;border-collapse:collapse;font:500 12px/1.4 var(--mono)}
+  th{text-align:right;color:var(--dim);font:600 10px/1 var(--sans);letter-spacing:.08em;text-transform:uppercase;padding:9px 12px;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  td{padding:8px 12px;border-bottom:1px solid #161d28;text-align:right;white-space:nowrap;color:var(--txt)}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:#131a24}
+  .pill{display:inline-block;padding:2px 7px;border-radius:6px;font:600 10px/1.4 var(--mono);background:#1a2230;color:var(--mut)}
+  .pill.gpu{color:#9ad0ff;background:rgba(120,170,255,.1)}
+  .pill.asic{color:#ffd79a;background:rgba(240,190,110,.1)}
+  .pill.idle{color:var(--dim);background:#161d28}
+  .route{color:var(--mut)} .route b{color:var(--acc);font-weight:600}
+  .ok{color:var(--good)} .am{color:var(--warn)} .rd{color:var(--bad)}
+  .hbar{display:inline-block;width:46px;height:6px;border-radius:3px;background:#1c2531;vertical-align:middle;overflow:hidden}
+  .hbar i{display:block;height:100%;background:var(--acc)}
+  .lev{display:flex;align-items:center;gap:10px;padding:7px 16px;font:500 12px/1 var(--mono)}
+  .lev .nm{width:96px;color:var(--mut)} .lev .track{flex:1;height:8px;border-radius:4px;background:#161d28;overflow:hidden}
+  .lev .track i{display:block;height:100%;background:linear-gradient(90deg,var(--acc2),var(--acc))}
+  .lev .vv{width:64px;text-align:right;color:var(--txt)}
+  .feed{padding:6px 0;max-height:280px;overflow:auto}
+  .feed li{list-style:none;padding:6px 16px;border-bottom:1px solid #141b25;display:flex;gap:10px;font:500 11.5px/1.45 var(--mono)}
+  .feed li:last-child{border:none}
+  .feed .ts{color:var(--dim);min-width:58px}
+  .feed .sc{color:var(--acc);min-width:64px}
+  .feed .sys{color:var(--warn)}
+  .charts{display:flex;gap:20px;padding:14px 16px}
+  .chart{flex:1}.chart svg{width:100%;height:120px;display:block}
+  .cl{font:600 10px var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--mut);margin-bottom:9px;display:flex;justify-content:space-between;align-items:baseline}
+  .cl .v{font:600 14px/1 var(--mono);color:var(--txt);letter-spacing:0}
+  .lg{font-weight:500;letter-spacing:0;text-transform:none;color:var(--dim);font-size:10px}
+  .lg i{display:inline-block;width:9px;height:3px;border-radius:2px;margin:0 4px 0 9px;vertical-align:middle}.lg .a{background:var(--acc)}.lg .m{background:#5b6878}
+  .sites{display:flex;gap:18px;flex-wrap:wrap;padding:12px 16px}
+  .site{flex:1;min-width:150px}
+  .site .h{display:flex;justify-content:space-between;font:600 12px/1 var(--mono);margin-bottom:7px}
+  .site .h b{color:var(--mut);font-weight:600} .site .h .a{color:var(--warn);font-size:10px}
+  .site .bar{height:8px;border-radius:4px;background:#161d28;overflow:hidden}
+  .site .bar i{display:block;height:100%;background:var(--acc)}
+  .foot{margin-top:26px;color:var(--dim);font:500 10.5px/1.6 var(--mono);text-align:center}
+  @media(max-width:1000px){.kpis{grid-template-columns:repeat(3,1fr)}.grid{grid-template-columns:1fr}}
+
+  /* Tab nav */
+  .nav{display:flex;gap:4px;margin-bottom:18px;border-bottom:1px solid var(--line)}
+  .nav button{background:none;border:none;color:var(--mut);font:600 11px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;padding:12px 18px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .nav button:hover{color:var(--txt)}
+  .nav button.active{color:var(--txt);border-bottom-color:var(--acc)}
+  .view{display:none}
+  .view.active{display:block}
+
+  /* Settings page */
+  .settings-intro{color:var(--mut);font:500 12px/1.6 var(--sans);padding:2px 16px 14px;border-bottom:1px solid var(--line);margin-bottom:14px}
+  .settings-intro b{color:var(--txt)}
+  .form-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;padding:6px 16px 16px}
+  .field label{display:block;font:600 10px/1 var(--sans);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:6px}
+  .field input,.field select{width:100%;background:#0a0f16;border:1px solid var(--line);border-radius:8px;color:var(--txt);font:500 12px/1 var(--mono);padding:9px 11px;outline:none}
+  .field input:focus,.field select:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(20,200,160,.12)}
+  .field .hint{margin-top:5px;color:var(--dim);font:500 10.5px/1.4 var(--mono)}
+  .pools-list{padding:2px 16px 16px}
+  .pool-row{display:grid;grid-template-columns:80px 1.7fr 1.3fr 100px 90px 90px 60px 44px;gap:8px;padding:8px 0;border-bottom:1px solid #141b25;align-items:end}
+  .pool-row:first-child{border-top:1px solid #141b25}
+  .pool-row input,.pool-row select{width:100%;background:#0a0f16;border:1px solid var(--line);border-radius:6px;color:var(--txt);font:500 11.5px/1 var(--mono);padding:8px 9px;outline:none}
+  .pool-row input:focus,.pool-row select:focus{border-color:var(--acc)}
+  .pool-row .rm{background:#1a1f28;border:1px solid var(--line);color:var(--bad);border-radius:6px;font:600 13px/1 var(--mono);cursor:pointer;height:32px}
+  .pool-row .rm:hover{background:rgba(239,110,110,.15)}
+  .col-head{display:grid;grid-template-columns:80px 1.7fr 1.3fr 100px 90px 90px 60px 44px;gap:8px;padding:8px 0 4px;color:var(--dim);font:600 10px/1 var(--sans);letter-spacing:.08em;text-transform:uppercase}
+  .actions{display:flex;gap:10px;padding:14px 16px 16px;align-items:center}
+  .btn{background:var(--acc);border:none;color:#062018;font:700 12px/1 var(--sans);letter-spacing:.08em;text-transform:uppercase;padding:11px 22px;border-radius:8px;cursor:pointer}
+  .btn:hover{background:var(--acc2)}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
+  .btn.ghost:hover{border-color:var(--acc);color:var(--acc)}
+  .save-msg{font:500 11.5px/1 var(--mono);margin-left:auto}
+  .save-msg.ok{color:var(--good)} .save-msg.err{color:var(--bad)}
+  .settings-help{padding:6px 16px 20px;color:var(--dim);font:500 11.5px/1.6 var(--sans)}
+  .settings-help code{background:#0a0f16;border:1px solid var(--line);color:var(--txt);padding:1px 6px;border-radius:4px;font:500 11px/1 var(--mono)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <svg width="40" height="40" viewBox="0 0 128 128" fill="none" aria-hidden="true">
+        <rect x="4" y="4" width="120" height="120" rx="28" fill="#111a2b"/>
+        <path d="M30 84 L48 72 L66 58 L84 42 L102 30" fill="none" stroke="#14c8a0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+        <rect x="24" y="84" width="12" height="14" rx="6" fill="#eaf1fb"/>
+        <rect x="42" y="72" width="12" height="26" rx="6" fill="#eaf1fb"/>
+        <rect x="60" y="58" width="12" height="40" rx="6" fill="#eaf1fb"/>
+        <rect x="78" y="42" width="12" height="56" rx="6" fill="#eaf1fb"/>
+        <circle cx="102" cy="30" r="15" fill="#14c8a0" opacity="0.14"/>
+        <path d="M102 16 L116 30 L102 44 L88 30 Z" fill="#14c8a0"/>
+      </svg>
+      <div><div class="wordmark">KAIROS</div><div class="tag">INTELLIGENT MINING CONTROL PLANE</div></div>
+    </div>
+    <div class="spacer"></div>
+    <div>
+      <div class="meta" style="justify-content:flex-end;margin-bottom:6px">
+        <span class="live"><span class="dot"></span> live</span>
+        <span>mode <b id="m-mode">—</b></span>
+        <span>risk <b id="m-risk">—</b></span>
+        <span>confidence <b id="m-conf">—</b></span>
+      </div>
+      <div class="hero">
+        <div class="n">$<span id="h-net">0.00</span><span> / day</span></div>
+        <span class="badge" id="h-uplift">—</span>
+      </div>
+    </div>
+  </header>
+
+  <nav class="nav">
+    <button data-view="dashboard" class="active" onclick="showView('dashboard')">Dashboard</button>
+    <button data-view="settings" onclick="showView('settings')">Settings</button>
+  </nav>
+
+  <!-- ============================ DASHBOARD VIEW ============================ -->
+  <div id="view-dashboard" class="view active">
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card"><h2>PERFORMANCE <span class="c" id="perf-c"></span></h2>
+    <div class="charts">
+      <div class="chart"><div class="cl"><span>Net&nbsp;$/day&nbsp;<span class="lg"><i class="a"></i>KAIROS<i class="m"></i>incumbent</span></span><span class="v" id="cv-net">—</span></div><svg id="ch-net" viewBox="0 0 600 120" preserveAspectRatio="none"></svg></div>
+      <div class="chart"><div class="cl"><span>Hashrate</span><span class="v" id="cv-hash">—</span></div><svg id="ch-hash" viewBox="0 0 600 120" preserveAspectRatio="none"></svg></div>
+    </div>
+  </div>
+
+  <div class="card"><h2>SITES <span class="c" id="amb"></span></h2><div class="sites" id="sites"></div></div>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>DEVICES <span class="c" id="dev-c"></span></h2>
+        <table><thead><tr>
+          <th>Device</th><th>Type</th><th>Mining</th><th>Hashrate</th><th>Temp</th><th>Power</th><th>Fan</th>
+          <th>Accepted</th><th>Rej%</th><th>Eff</th><th>Health</th>
+        </tr></thead><tbody id="devs"></tbody></table>
+      </div>
+      <div class="card">
+        <h2>POOLS <span class="c">stratum connections</span></h2>
+        <table><thead><tr>
+          <th>Coin</th><th>Scheme</th><th>Pool URL</th><th>Worker</th><th>Latency</th><th>Accepted</th><th>Rej%</th><th>Status</th>
+        </tr></thead><tbody id="pools"></tbody></table>
+      </div>
+    </div>
+    <div>
+      <div class="card"><h2>WHAT TO MINE <span class="c">net $/day · best device</span></h2><div id="profit" style="padding:5px 0 9px"></div></div>
+      <div class="card"><h2>VALUE BY LEVER <span class="c">credit ledger</span></h2><div id="credit" style="padding:6px 0 10px"></div></div>
+      <div class="card"><h2>DECISIONS</h2><ul class="feed" id="feed"></ul></div>
+      <div class="card"><h2>SYSTEM EVENTS</h2><ul class="feed" id="events" style="max-height:180px"></ul></div>
+    </div>
+  </div>
+  </div><!-- /view-dashboard -->
+
+  <!-- ============================ SETTINGS VIEW ============================ -->
+  <div id="view-settings" class="view">
+    <div class="card">
+      <h2>WALLETS <span class="c">payout addresses per coin</span></h2>
+      <div class="settings-intro">Enter your <b>real payout addresses</b>. KAIROS never holds keys or moves funds — pool payouts go directly to these addresses.</div>
+      <div class="form-grid" id="wallets-form"></div>
+    </div>
+
+    <div class="card">
+      <h2>POOL CONNECTIONS <span class="c">the familiar miner shape</span></h2>
+      <div class="settings-intro">One row per pool: URL, worker, password, scheme, priority. Add more than one pool for a coin (with different <b>priorities</b>) for automatic failover — lower number = primary.</div>
+      <div class="pools-list">
+        <div class="col-head"><span>Coin</span><span>Pool URL</span><span>User (wallet)</span><span>Worker</span><span>Pass</span><span>Scheme</span><span>Prio</span><span></span></div>
+        <div id="pool-rows"></div>
+      </div>
+      <div class="actions">
+        <button class="btn ghost" onclick="addPoolRow()">+ Add pool</button>
+        <button class="btn" onclick="saveConfig()">Save configuration</button>
+        <span class="save-msg" id="save-msg"></span>
+      </div>
+      <div class="settings-help">
+        Saved to <code id="cfg-path">kairos.toml</code> in the app folder. Changes take effect on the next control-plane tick; for real mining, restart with <code>kairos start --live --yes</code>.
+      </div>
+    </div>
+  </div><!-- /view-settings -->
+
+  <div class="foot">KAIROS v0.1.0 · intelligent mining control plane · the layer above the hasher — what to mine, when, where, at which clock &amp; power, hedged how, to maximize risk‑adjusted profit.</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const usd = (v,d=2) => '$' + (v||0).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
+const num = (v) => (v||0).toLocaleString();
+const pct = (v,d=1) => (v||0).toFixed(d) + '%';
+const tcls = t => t>=82?'rd':t>=74?'am':'ok';
+const rcls = p => p>=3?'rd':p>=1?'am':'ok';
+const hrTime = t => { t=Math.max(0,t||0); const h=Math.floor(t/3600), m=Math.floor((t%3600)/60); return h+'h '+m.toString().padStart(2,'0')+'m'; };
+const shortUser = u => { if(!u) return '—'; if(u.length<=20) return u; return u.slice(0,10)+'…'+u.slice(-5); };
+
+function kpi(k,v,s){ return `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s||''}</div></div>`; }
+
+function chart(id, vals, base){
+  const w=600,h=120,pad=8, svg=$(id); if(!svg) return;
+  const all = base&&base.length ? vals.concat(base) : vals;
+  if(!all.length){ svg.innerHTML=''; return; }
+  let mn=Math.min(...all), mx=Math.max(...all); if(mn===mx){mn-=1;mx+=1;} const rng=mx-mn;
+  const px=(i,n)=>pad+(i/((n-1)||1))*(w-2*pad), py=v=>h-pad-((v-mn)/rng)*(h-2*pad);
+  const ln=a=>a.map((v,i)=>(i?'L':'M')+px(i,a.length).toFixed(1)+' '+py(v).toFixed(1)).join(' ');
+  const ar=a=>{const p=ln(a); return p? p+` L${px(a.length-1,a.length).toFixed(1)} ${h-pad} L${pad} ${h-pad} Z`:'';};
+  const base0 = mn<=0&&mx>=0 ? py(0).toFixed(1) : null;
+  let s = base0? `<line x1="${pad}" y1="${base0}" x2="${w-pad}" y2="${base0}" stroke="#243040" stroke-width="1"/>`:'';
+  s += `<path d="${ar(vals)}" fill="rgba(20,200,160,.13)"/>`;
+  if(base&&base.length) s += `<path d="${ln(base)}" fill="none" stroke="#5b6878" stroke-width="1.4" stroke-dasharray="4 3"/>`;
+  s += `<path d="${ln(vals)}" fill="none" stroke="#14c8a0" stroke-width="2"/>`;
+  svg.innerHTML = s;
+}
+function fmtHash(h){ if(h>=1e15)return (h/1e15).toFixed(2)+' PH/s'; if(h>=1e12)return (h/1e12).toFixed(2)+' TH/s'; if(h>=1e9)return (h/1e9).toFixed(2)+' GH/s'; return (h/1e6).toFixed(1)+' MH/s'; }
+
+async function refresh(){
+  let m; try{ m = await (await fetch('/metrics',{cache:'no-store'})).json(); }catch(e){ return; }
+  const e = m.economics||{}, f = m.fleet||{};
+  $('h-net').textContent = (e.net_usd_per_day||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const up = e.mining_uplift_frac;
+  const b = $('h-uplift');
+  if(up==null){ b.textContent='baseline warming up'; b.className='badge'; }
+  else { b.textContent=(up>=0?'▲ ':'▼ ')+(up*100).toFixed(1)+'% mining uplift vs incumbent'; b.className='badge'+(up<0?' neg':''); }
+  $('m-mode').textContent = m.mode||'—';
+  $('m-risk').textContent = m.risk||'—';
+  $('m-conf').textContent = ((m.confidence||0)*100).toFixed(0)+'%';
+
+  $('kpis').innerHTML =
+    kpi('Hashrate', f.hashrate_h||'—', f.devices+' devices') +
+    kpi('Power', ((f.power_w||0)/1000).toFixed(1)+' kW', (f.power_w||0).toFixed(0)+' W') +
+    kpi('Mining', (f.mining||0)+' / '+(f.devices||0), (f.online||0)+' online') +
+    kpi('Uptime', ((f.uptime_frac||0)*100).toFixed(2)+'%', 'run') +
+    kpi('Grid income', usd(e.grid_income_usd), 'demand-response') +
+    kpi('Sim2Real', ((m.sim2real_error||0)*100).toFixed(1)+'%', 'forecast error');
+
+  // performance charts
+  const H = m.history||[];
+  $('perf-c').textContent = H.length+' samples';
+  chart('ch-net', H.map(p=>p.net_day), H.map(p=>p.base_day));
+  chart('ch-hash', H.map(p=>p.hashrate));
+  $('cv-net').textContent = H.length ? '$'+(H[H.length-1].net_day||0).toFixed(2) : '—';
+  $('cv-hash').textContent = H.length ? fmtHash(H[H.length-1].hashrate) : '—';
+
+  // sites
+  $('amb').textContent = (m.sites&&m.sites[0]) ? 'ambient '+(m.sites[0].ambient_c||0).toFixed(0)+'°C' : '';
+  $('sites').innerHTML = (m.sites||[]).map(s=>{
+    const cap = s.cap_w>0 ? s.cap_w : (s.power_w*1.25||1);
+    const fr = Math.min(100, s.power_w/cap*100);
+    const armed = s.dr_armed ? '<span class="a">DR armed</span>' : '';
+    return `<div class="site"><div class="h"><b>${s.id}</b><span>${(s.power_w/1e6).toFixed(2)} / ${(cap/1e6).toFixed(2)} MW ${armed}</span></div><div class="bar"><i style="width:${fr}%"></i></div></div>`;
+  }).join('');
+
+  // devices
+  $('dev-c').textContent = (m.devices||[]).length+' managed';
+  $('devs').innerHTML = (m.devices||[]).map(d=>{
+    const cl = d.class==='GPU'?'gpu':d.class==='ASIC'?'asic':'';
+    const mining = d.mining ? `<span class="route"><b>${d.algo}</b> → ${d.coin}</span>` : `<span class="pill idle">${d.fault?d.fault:'idle'}</span>`;
+    const eff = d.efficiency_jth>0 ? d.efficiency_jth.toFixed(1)+' J/TH' : '—';
+    const hp = Math.round((d.rul_frac||1)*100);
+    return `<tr>
+      <td>${d.id}</td>
+      <td><span class="pill ${cl}">${d.class}</span></td>
+      <td style="text-align:left">${mining}</td>
+      <td>${d.mining?d.hashrate_h:'—'}</td>
+      <td class="${tcls(d.temp_c)}">${d.online?d.temp_c.toFixed(0)+'°':'—'}</td>
+      <td>${d.power_w>0?d.power_w.toFixed(0)+' W':'—'}</td>
+      <td>${d.online?d.fan_pct.toFixed(0)+'%':'—'}</td>
+      <td>${num(d.accepted)}</td>
+      <td class="${rcls(d.reject_pct)}">${pct(d.reject_pct,2)}</td>
+      <td>${eff}</td>
+      <td><span class="hbar"><i style="width:${hp}%;background:${hp<60?'var(--bad)':hp<85?'var(--warn)':'var(--acc)'}"></i></span></td>
+    </tr>`;
+  }).join('');
+
+  // pools — the stratum connection view
+  $('pools').innerHTML = (m.pools||[]).map(p=>`<tr>
+      <td>${p.coin}</td><td><span class="pill">${p.scheme}</span></td>
+      <td style="text-align:left;color:var(--mut)" title="${p.url}">${p.url||'—'}</td>
+      <td style="text-align:left" title="${p.user||''}">${shortUser(p.user)}</td>
+      <td>${p.latency_ms>9000?'—':p.latency_ms.toFixed(0)+' ms'}</td>
+      <td>${num(p.accepted)}</td>
+      <td class="${rcls(p.reject_pct)}">${pct(p.reject_pct,2)}</td>
+      <td class="${p.online?'ok':'rd'}">${p.online?'online':'OUTAGE'}</td>
+    </tr>`).join('');
+
+  // what to mine
+  const pr = m.profitability||[]; const pmx = Math.max(0.0001, ...pr.map(c=>Math.abs(c.profit_per_day)));
+  $('profit').innerHTML = pr.map(c=>{
+    const w = Math.max(2, Math.abs(c.profit_per_day)/pmx*100);
+    const col = c.profit_per_day>=0 ? 'var(--acc)' : 'var(--bad)';
+    return `<div class="lev"><span class="nm" style="width:74px">${c.active?'<b style="color:var(--acc)">'+c.coin+'</b>':c.coin} <span style="color:var(--dim);font-size:10px">${c.class}</span></span><span class="tk"><i style="width:${w}%;background:${col}"></i></span><span class="vv" style="width:78px">$${c.profit_per_day.toFixed(3)}</span></div>`;
+  }).join('') || '<div class="lev"><span class="nm">—</span></div>';
+
+  // credit
+  const cr = m.credit||[]; const mx = Math.max(0.0001, ...cr.map(c=>c.usd));
+  $('credit').innerHTML = cr.map(c=>`<div class="lev"><span class="nm">${c.lever}</span><span class="track"><i style="width:${Math.max(2,c.usd/mx*100)}%"></i></span><span class="vv">${usd(c.usd)}</span></div>`).join('') || '<div class="lev"><span class="nm">—</span></div>';
+
+  // feed + events
+  $('feed').innerHTML = (m.feed||[]).map(r=>`<li><span class="ts">${hrTime(r.t)}</span><span class="sc">${r.scope}</span><span>${r.message}</span></li>`).join('') || '<li><span class="ts">—</span><span>holding positions</span></li>';
+  $('events').innerHTML = (m.events||[]).map(r=>`<li><span class="sys">${r.message}</span></li>`).join('') || '<li><span>nominal</span></li>';
+}
+refresh();
+setInterval(refresh, 2000);
+
+// ─────────────────────────── SETTINGS PAGE ──────────────────────────────────
+
+const COINS = ['BTC','KAS','ERG','ETC','RVN'];
+const SCHEMES = ['fpps','pplns','pps','prop','solo'];
+
+function showView(name){
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-'+name));
+  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  if(name === 'settings') loadConfig();
+}
+
+function walletField(coin, value){
+  return `<div class="field"><label>${coin} payout address</label>
+    <input type="text" data-coin="${coin}" value="${value||''}" placeholder="${coin} wallet…" spellcheck="false" autocomplete="off">
+    <div class="hint">used as pool username unless overridden per‑pool</div></div>`;
+}
+
+function coinOptions(sel){ return COINS.map(c => `<option value="${c}" ${c===sel?'selected':''}>${c}</option>`).join(''); }
+function schemeOptions(sel){ return SCHEMES.map(s => `<option value="${s}" ${s===sel?'selected':''}>${s}</option>`).join(''); }
+
+function poolRow(p){
+  p = p || {coin:'KAS', url:'', user:'', worker:'', pass:'x', scheme:'fpps', priority:0};
+  return `<div class="pool-row">
+    <select class="p-coin">${coinOptions(p.coin)}</select>
+    <input class="p-url" type="text" value="${p.url||''}" placeholder="stratum+tcp://host:port" spellcheck="false" autocomplete="off">
+    <input class="p-user" type="text" value="${p.user||''}" placeholder="(uses wallet)" spellcheck="false" autocomplete="off">
+    <input class="p-worker" type="text" value="${p.worker||''}" placeholder="rig01" spellcheck="false" autocomplete="off">
+    <input class="p-pass" type="text" value="${p.pass||''}" placeholder="x" spellcheck="false" autocomplete="off">
+    <select class="p-scheme">${schemeOptions(p.scheme||'fpps')}</select>
+    <input class="p-prio" type="number" min="0" max="99" value="${p.priority||0}">
+    <button class="rm" title="Remove pool" onclick="this.parentElement.remove()">✕</button>
+  </div>`;
+}
+
+function addPoolRow(p){
+  const el = document.createElement('div');
+  el.innerHTML = poolRow(p);
+  $('pool-rows').appendChild(el.firstElementChild);
+}
+
+async function loadConfig(){
+  setSaveMsg('', '');
+  try {
+    const r = await fetch('/config'); const cfg = await r.json();
+    // Wallets: render one field per known coin, pre-filled with what the file has.
+    const wallets = cfg.wallets || {};
+    $('wallets-form').innerHTML = COINS.map(c => walletField(c, wallets[c])).join('');
+    // Pools.
+    $('pool-rows').innerHTML = '';
+    (cfg.pools || []).forEach(p => addPoolRow(p));
+    if((cfg.pools||[]).length === 0) addPoolRow(); // start with one empty row
+    if(cfg.path) $('cfg-path').textContent = cfg.path;
+  } catch(e){
+    setSaveMsg('err', 'could not load config: ' + e.message);
+  }
+}
+
+function setSaveMsg(cls, text){
+  const el = $('save-msg'); if(!el) return;
+  el.className = 'save-msg ' + (cls || '');
+  el.textContent = text || '';
+}
+
+async function saveConfig(){
+  // Collect wallets.
+  const wallets = {};
+  document.querySelectorAll('#wallets-form input[data-coin]').forEach(i => {
+    const v = i.value.trim(); if(v) wallets[i.dataset.coin] = v;
+  });
+  // Collect pool rows; drop rows without a URL.
+  const pools = [];
+  document.querySelectorAll('#pool-rows .pool-row').forEach(row => {
+    const url = row.querySelector('.p-url').value.trim();
+    if(!url) return;
+    pools.push({
+      coin: row.querySelector('.p-coin').value,
+      url,
+      user: row.querySelector('.p-user').value.trim(),
+      worker: row.querySelector('.p-worker').value.trim(),
+      pass: row.querySelector('.p-pass').value.trim() || 'x',
+      scheme: row.querySelector('.p-scheme').value,
+      priority: parseInt(row.querySelector('.p-prio').value || '0', 10),
+    });
+  });
+  setSaveMsg('', 'saving…');
+  try {
+    const r = await fetch('/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({wallets, pools})});
+    const res = await r.json();
+    if(res.ok){
+      setSaveMsg('ok', 'saved · ' + (res.saved_to || 'kairos.toml'));
+      setTimeout(() => setSaveMsg('', ''), 3500);
+    } else {
+      setSaveMsg('err', res.error || 'save failed');
+    }
+  } catch(e){
+    setSaveMsg('err', 'save failed: ' + e.message);
+  }
+}
+</script>
+</body>
+</html>

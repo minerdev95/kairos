@@ -1,0 +1,44 @@
+KAIROS — Proprietary Software License
+Copyright (c) 2026 the KAIROS project owner. All rights reserved.
+
+This software and its source code (the "Software") are proprietary and
+confidential. They are licensed, not sold.
+
+1. GRANT. Subject to this license, the owner grants you a personal,
+   non-exclusive, non-transferable, revocable license to install and run
+   official, unmodified binary builds of the Software to mine on your own
+   hardware for your own account.
+
+2. RESTRICTIONS. You may NOT, in whole or in part:
+   (a) copy, publish, mirror, redistribute, sublicense, sell, rent, or lend the
+       Software or its source code;
+   (b) modify, adapt, translate, or create derivative works, including any fork;
+   (c) reverse engineer, decompile, disassemble, or otherwise attempt to derive
+       source code from a binary, except to the limited extent this restriction
+       is prohibited by applicable law;
+   (d) remove, disable, bypass, obfuscate, or interfere with the disclosed
+       developer fee, the license notices, or any technical protection measure;
+   (e) remove or alter any copyright, trademark, or attribution notice.
+
+3. DEVELOPER FEE. The Software collects a disclosed developer fee (see the
+   README). Circumventing or removing it is a material breach and terminates
+   this license immediately.
+
+4. OWNERSHIP. The owner retains all right, title, and interest in the Software,
+   including all intellectual-property rights. No rights are granted except as
+   expressly stated here.
+
+5. NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+6. LIMITATION OF LIABILITY. IN NO EVENT SHALL THE OWNER BE LIABLE FOR ANY CLAIM,
+   DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR
+   OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+   OR OTHER DEALINGS IN THE SOFTWARE. Mining is undertaken at your own risk.
+
+7. TERMINATION. This license terminates automatically if you breach any term.
+   On termination you must stop using and destroy all copies of the Software.
+
+For any other use — including commercial redistribution or a partnership —
+contact the owner for a separate written agreement.

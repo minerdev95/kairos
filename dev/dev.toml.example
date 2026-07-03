@@ -1,0 +1,46 @@
+# KAIROS private developer overlay — TEMPLATE.
+#
+# Copy this to `dev/dev.toml` (which is gitignored) and fill in YOUR values.
+# When `dev/dev.toml` exists, the app shows a passphrase-gated "Dev" tab where you
+# manage the per-coin developer-fee payout addresses and see this instance's stats.
+#
+# SECURITY (read this):
+#   • These are PUBLIC payout addresses only. NEVER put a private key anywhere.
+#   • `admin_key_sha256` is the SHA-256 of your admin passphrase. Generate it with:
+#         kairos dev-hash "your-strong-passphrase"
+#     and paste the printed hex below. The passphrase itself is never stored.
+#   • The developer fee is disclosed in the README; keep it disclosed.
+
+admin_key_sha256 = "PASTE_OUTPUT_OF_kairos_dev-hash_HERE"
+
+# ── Per-coin developer-fee payout addresses ──────────────────────────────────
+# The disclosed 1% routes here during dev rounds. A coin only collects the fee if
+# it has a real address below (blank = that coin contributes nothing). Addresses
+# must match the coin's network — a KAS address cannot receive RVN.
+#
+# These cover the coins KAIROS can mine today (SHA-256d, kHeavyHash, scrypt) plus
+# the ones on the kernel roadmap, so you can pre-fill and forget.
+[wallets]
+BTC  = ""   # Bitcoin            (SHA-256d)
+BCH  = ""   # Bitcoin Cash       (SHA-256d)
+KAS  = ""   # Kaspa              (kHeavyHash)
+LTC  = ""   # Litecoin           (scrypt)
+DOGE = ""   # Dogecoin           (scrypt)
+DGB  = ""   # DigiByte           (scrypt / SHA-256d)
+ERG  = ""   # Ergo               (Autolykos2 — roadmap kernel)
+ETC  = ""   # Ethereum Classic   (Etchash — roadmap kernel)
+RVN  = ""   # Ravencoin          (KawPow — roadmap kernel)
+ZEC  = ""   # Zcash              (Equihash — roadmap kernel)
+FLUX = ""   # Flux               (ZelHash — roadmap kernel)
+XMR  = ""   # Monero             (RandomX — roadmap kernel)
+
+# ── Fleet telemetry (optional; DISCLOSED opt-in) ─────────────────────────────
+# To learn how many miners run KAIROS and which pools/coins they mine, run your
+# own ingest server and set the endpoint here. When enabled, each instance POSTs
+# ANONYMOUS stats only (random instance id, app version, OS, coins/pools mined,
+# hashrate) — never wallet addresses, never personal data. This is disclosed in
+# the README. Leave enabled = false (or endpoint empty) to send nothing.
+[telemetry]
+enabled = false
+endpoint = ""            # e.g. "https://stats.yourdomain.com/ingest"
+interval_secs = 300
