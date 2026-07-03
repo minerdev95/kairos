@@ -216,6 +216,30 @@ fn main() {
                 None => eprintln!("usage: kairos poolcheck <stratum-url> [user]\n  e.g. kairos poolcheck stratum+tcp://doge.example.com:3333 DYourAddr.worker"),
             }
         }
+        "kaspa-mine" => {
+            // Bounded REAL mining run to verify accepted shares on live hardware.
+            let url = args.get(1).cloned();
+            let wallet = args.get(2).cloned();
+            let secs: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(90);
+            match (url, wallet) {
+                (Some(u), Some(w)) if consent => print_kaspa_mine(&u, &w, secs),
+                (Some(_), Some(_)) => eprintln!("`kaspa-mine` submits REAL shares to the pool — re-run with --yes to confirm."),
+                _ => eprintln!("usage: kairos kaspa-mine <stratum-url> <kaspa-wallet[.worker]> [seconds] --yes"),
+            }
+        }
+        "etc-verify" | "etc-probe" => {
+            let url = args.get(1).cloned();
+            let user = args.get(2).cloned();
+            match (url, user) {
+                (Some(u), Some(w)) => print_etc_verify(&u, &w),
+                _ => eprintln!(
+                    "usage: kairos etc-verify <stratum-url> <etc-wallet[.worker]>\n  \
+                     e.g. kairos etc-verify stratum+tcp://etc.2miners.com:1010 0xYourAddr.rig1\n  \
+                     Does the EthereumStratum/1.0.0 handshake and prints the parsed job\n  \
+                     (seedhash→epoch, headerhash, difficulty→target) — submits nothing."
+                ),
+            }
+        }
         "kaspa-verify" | "kaspa-probe" => {
             let url = args.get(1).cloned();
             let user = args.get(2).cloned();
@@ -635,6 +659,107 @@ fn print_poolcheck(url: &str, user: &str) {
             println!("  connect/handshake failed: {e}");
             println!("  check the URL/port, or the pool may use a protocol KAIROS doesn't support yet.");
         }
+    }
+}
+
+/// ETC EthereumStratum/1.0.0 handshake + first-job parse, printed for verification.
+fn print_etc_verify(url: &str, wallet: &str) {
+    use std::time::Duration;
+    println!("ETC POOL VERIFY  (EthereumStratum/1.0.0 handshake — diagnostic only, no shares)");
+    println!("  url    : {url}");
+    println!("  wallet : {wallet}\n");
+    match kairos::etc::verify(url, wallet, "x", Duration::from_secs(15)) {
+        Ok(p) => {
+            let yn = |b: bool| if b { "yes" } else { "no" };
+            println!("  subscribe ok   : {}  (result {})", yn(p.subscribe_ok), p.subscribe_result);
+            match &p.extranonce_hex {
+                Some(x) => println!("  extranonce     : {x}  ({} byte(s), high nonce bytes)", x.len() / 2),
+                None => println!("  extranonce     : (none)"),
+            }
+            match p.authorize_ok {
+                Some(b) => println!("  authorize ok   : {}", yn(b)),
+                None => println!("  authorize ok   : (no reply yet)"),
+            }
+            match p.difficulty {
+                Some(d) => println!("  difficulty     : {d}"),
+                None => println!("  difficulty     : (not sent)"),
+            }
+            match (&p.job_id, &p.seed_hash_hex, &p.header_hash_hex, &p.target_hex) {
+                (Some(id), Some(seed), Some(hdr), Some(tgt)) => {
+                    println!("  job id         : {id}");
+                    println!("  seedhash       : {seed}");
+                    match (p.epoch, p.dag_bytes) {
+                        (Some(ep), Some(dag)) => println!("  epoch          : {ep}   (DAG {:.2} GB)", dag as f64 / 1e9),
+                        _ => println!("  epoch          : (seedhash not matched — unusual)"),
+                    }
+                    println!("  headerhash     : {hdr}");
+                    println!("  share target   : {tgt}");
+                    println!("\n  ✓ KAIROS parsed a live ETC job. Handshake, EthereumStratum/1.0.0 job format,");
+                    println!("    seedhash→epoch, and diff→target (0xFFFF·2^208 / d) all resolved.");
+                    println!("    Mining ETC needs the GPU DAG + hashimoto kernel (build --features gpu).");
+                }
+                _ => {
+                    println!("\n  ⚠ Subscribed but no job parsed in time. Saw {} message(s).", p.lines_seen);
+                    println!("    The pool may use ethproxy/getwork rather than EthereumStratum/1.0.0.");
+                    println!("    Share this output to iterate.");
+                }
+            }
+        }
+        Err(e) => {
+            println!("  connect/handshake failed: {e}");
+            println!("  check host:port and that it's an ETC (Etchash) EthereumStratum pool.");
+        }
+    }
+}
+
+/// Bounded live Kaspa mining run — submits real shares and reports accept/reject so
+/// we can confirm the KAS path end-to-end on real hardware.
+fn print_kaspa_mine(url: &str, wallet: &str, secs: u64) {
+    use kairos::engine::SessionShared;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    let workers = std::thread::available_parallelism().map(|n| n.get().saturating_sub(1).max(1)).unwrap_or(1);
+    println!("KASPA LIVE MINE  (submits REAL shares — verification run, {secs}s, {workers} CPU workers)");
+    println!("  url    : {url}");
+    println!("  wallet : {wallet}\n");
+    let shared = Arc::new(SessionShared::default());
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let (u, w, sh) = (url.to_string(), wallet.to_string(), shared.clone());
+    let handle = std::thread::spawn(move || kairos::kaspa::run(&u, &w, "x", workers, &sh, Some(deadline)));
+    let start = Instant::now();
+    while start.elapsed().as_secs() < secs {
+        std::thread::sleep(Duration::from_secs(5));
+        println!(
+            "  [{:3}s] connected={} hashrate={} submitted={} accepted={} rejected={}",
+            start.elapsed().as_secs(),
+            shared.connected.load(Ordering::Relaxed),
+            hh(shared.hashrate()),
+            shared.submitted.load(Ordering::Relaxed),
+            shared.accepted.load(Ordering::Relaxed),
+            shared.rejected.load(Ordering::Relaxed),
+        );
+    }
+    shared.stop.store(true, Ordering::SeqCst);
+    let res = handle.join().ok();
+    let acc = shared.accepted.load(Ordering::Relaxed);
+    let rej = shared.rejected.load(Ordering::Relaxed);
+    let sub = shared.submitted.load(Ordering::Relaxed);
+    println!("\n  RESULT: submitted {sub}, accepted {acc}, rejected {rej}");
+    if let Some(Err(e)) = res {
+        println!("  session ended: {e}");
+    }
+    if let Ok(err) = shared.last_error.lock() {
+        if let Some(e) = err.as_ref() {
+            println!("  last pool message: {e}");
+        }
+    }
+    if acc > 0 {
+        println!("  ✓ KAS shares ACCEPTED — the Kaspa mining path is VERIFIED end-to-end.");
+    } else if rej > 0 {
+        println!("  ✗ shares submitted but REJECTED — a format knob needs a tweak. Share this output.");
+    } else {
+        println!("  … no shares in {secs}s (CPU hashrate is low vs share difficulty). Try a longer run or the GPU build.");
     }
 }
 
