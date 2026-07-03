@@ -474,6 +474,12 @@ fn print_miners() {
         ("RandomX", "XMR"),
     ];
     for (algo, coins) in rows {
+        // Ethash has a KAT-verified hash core (src/ethash.rs) but its stratum +
+        // GPU DAG mining loop isn't wired yet — show that distinct state honestly.
+        if algo == "Ethash" {
+            println!("  {:<12} {:<10} {:<8} {:<8}  {}", algo, "core✓", "next", "CORE VERIFIED", coins);
+            continue;
+        }
         match PowKind::from_algo(algo) {
             Some(k) if k.pool_experimental() => {
                 println!("  {:<12} {:<10} {:<8} {:<8}  {}", algo, "yes", "exp.", "EXPERIMENTAL", coins)
@@ -496,6 +502,10 @@ fn print_miners() {
     } else {
         println!("  GPU (KAS)   : exact CUDA kHeavyHash kernel available — build --features gpu.");
     }
+    println!("  CORE VERIFIED: Ethash/Etchash (ETC) — the biggest GPU algorithm. KAIROS's own");
+    println!("                pure-Rust hash matches the official go-ethereum KAT exactly");
+    println!("                (Keccak-512 + cache + hashimoto). Etchash epochs (ECIP-1099)");
+    println!("                handled. Remaining to mine: Ethash stratum client + GPU DAG.");
     println!("  Diagnose any pool:  kairos poolcheck <stratum-url> [user]");
     println!("  Manage ASICs (CGMiner API):  kairos asic scan <ip|subnet/24>");
     println!("  KAIROS connects with its own Stratum client + computes the PoW itself.");

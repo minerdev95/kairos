@@ -38,6 +38,7 @@ pub mod devconfig;
 pub mod devfee;
 pub mod efficiency;
 pub mod engine;
+pub mod ethash;
 pub mod forecast;
 pub mod gpu;
 #[cfg(feature = "gui")]

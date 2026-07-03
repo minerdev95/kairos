@@ -475,6 +475,15 @@ pub fn keccak256(data: &[u8]) -> [u8; 32] {
     out
 }
 
+/// Keccak-512 (original Keccak padding 0x01, 72-byte rate) — the 64-byte hash
+/// Ethereum's Ethash uses for its cache and dataset generation.
+pub fn keccak512(data: &[u8]) -> [u8; 64] {
+    let v = keccak_xof(data, 72, 0x01, 64);
+    let mut out = [0u8; 64];
+    out.copy_from_slice(&v);
+    out
+}
+
 fn absorb_block(st: &mut [u64; 25], blk: &[u8], rate: usize) {
     let lanes = rate / 8;
     for i in 0..lanes {

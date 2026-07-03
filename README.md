@@ -51,7 +51,12 @@ that shows exactly what KAIROS *would* mine and why. To actually mine, you add t
 | **BTC · BCH · DGB** (SHA‑256) | KAIROS's own engine | ✅ Works today |
 | **LTC · DOGE · DGB** (scrypt) | KAIROS's own engine | ✅ Works today |
 | **KAS** (Kaspa / kHeavyHash) | KAIROS's own engine | ⚠️ Experimental — verify first (below) |
-| ERG · ETC · RVN · XMR | — | 🔜 On the roadmap |
+| **ETC** (Ethereum Classic / Etchash) | KAIROS's own engine | 🧪 Algorithm verified — GPU mining coming |
+| ERG · RVN · XMR | — | 🔜 On the roadmap |
+
+*Ethereum Classic is the **biggest GPU‑mined coin**. KAIROS's own Ethash/Etchash
+implementation is proven correct against Ethereum's official test vector; the remaining
+piece to actually mine it is the Ethash pool protocol + GPU DAG, which is next.*
 
 You can point KAIROS at **any pool you like** — add the URL, your wallet, and worker
 name in Settings, and it handles the rest.
