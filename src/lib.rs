@@ -30,6 +30,7 @@ pub mod alerts;
 pub mod algo;
 pub mod api;
 pub mod asic;
+pub mod autolykos;
 pub mod cal;
 pub mod config;
 pub mod console;
