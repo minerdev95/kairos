@@ -206,6 +206,227 @@ pub fn verify(url: &str, user: &str, pass: &str, timeout: Duration) -> std::io::
     Ok(p)
 }
 
+/// A resolved ERG job the GPU searches.
+#[derive(Clone)]
+struct ErgJob {
+    job_id: String,
+    msg: [u8; 32],
+    height: u32,
+    n: u64,
+    target: [u8; 32],
+}
+
+/// Live Ergo (Autolykos2) mining: connect, handshake, then GPU-search nonces for each
+/// job and submit found shares. Runs until `shared.stop` or `deadline`. Requires the
+/// GPU backend (`--features gpu`); the found nonce is CPU-re-verified before submit.
+pub fn run(url: &str, user: &str, pass: &str, shared: &crate::engine::SessionShared, deadline: Option<Instant>) -> std::io::Result<()> {
+    use std::sync::atomic::Ordering;
+    let (host, port) = crate::stratum::parse_endpoint(url)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad erg url"))?;
+    let addr = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port))?
+        .next()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no address"))?;
+    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(15))?;
+    stream.set_read_timeout(Some(Duration::from_millis(50)))?;
+    let mut writer = stream.try_clone()?;
+    let mut reader = BufReader::new(stream);
+
+    let mut send = |id: u64, method: &str, params: Value| -> std::io::Result<()> {
+        writer.write_all(format!("{}\n", json!({"id": id, "method": method, "params": params})).as_bytes())
+    };
+    send(1, "mining.subscribe", json!(["kairos/0.1.0"]))?;
+    send(2, "mining.authorize", json!([user, pass]))?;
+    shared.connected.store(true, Ordering::SeqCst);
+
+    let mut extranonce_high: u64 = 0;
+    let mut extranonce_bits: u32 = 0;
+    let mut job: Option<ErgJob> = None;
+    let mut counter: u64 = 0;
+    let mut submit_id: u64 = 100;
+    let started = Instant::now();
+    let mut hashed: u64 = 0;
+    // Precomputed element table (fast path). Rebuilt when the block height changes;
+    // None if it won't fit in GPU memory — then we fall back to the on-the-fly kernel.
+    let mut table: Option<crate::gpu::AutolykosTable> = None;
+    let mut table_failed = false;
+
+    let result: std::io::Result<()> = (|| {
+        loop {
+            if shared.stop.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Some(dl) = deadline {
+                if Instant::now() >= dl {
+                    break;
+                }
+            }
+            // Drain any pending pool messages (jobs, difficulty, submit replies).
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "pool closed")),
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => break,
+                    Err(e) => return Err(e),
+                }
+                let v: Value = match serde_json::from_str(line.trim()) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                match v["method"].as_str() {
+                    Some("mining.set_extranonce") => {
+                        if let Some((val, bits)) = v["params"][0].as_str().and_then(parse_extranonce) {
+                            extranonce_high = val << (64 - bits);
+                            extranonce_bits = bits;
+                        }
+                    }
+                    Some("mining.notify") => {
+                        if let Some(j) = parse_job(&v["params"]) {
+                            job = Some(j);
+                            counter = 0;
+                        }
+                    }
+                    _ => {
+                        if v["id"].as_u64() == Some(1) {
+                            if let Some((val, bits)) = v["result"][1].as_str().and_then(parse_extranonce) {
+                                extranonce_high = val << (64 - bits);
+                                extranonce_bits = bits;
+                            }
+                        } else if v["id"].as_u64() >= Some(100) {
+                            // a submit reply
+                            if std::env::var("KAIROS_ERG_DEBUG").is_ok() {
+                                eprintln!("[submit-reply] {v}");
+                            }
+                            if v["result"].as_bool() == Some(true) {
+                                shared.accepted.fetch_add(1, Ordering::Relaxed);
+                            } else if !v["error"].is_null() || v["result"].as_bool() == Some(false) {
+                                shared.rejected.fetch_add(1, Ordering::Relaxed);
+                                if let Some(e) = v["error"].as_array().and_then(|a| a.get(1)).and_then(|x| x.as_str()) {
+                                    *shared.last_error.lock().unwrap() = Some(e.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let j = match &job {
+                Some(j) => j.clone(),
+                None => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+            };
+            // Ensure the fast element table matches the current height (rebuild on
+            // change). If it can't be allocated, fall back to the on-the-fly kernel.
+            if !table_failed && table.as_ref().map(|t| t.height) != Some(j.height) {
+                table = None; // free the old one first
+                match crate::gpu::AutolykosTable::new(j.height, j.n) {
+                    Some(t) => table = Some(t),
+                    None => table_failed = true,
+                }
+            }
+            // batch size: big for the table (memory-bound), small for on-the-fly.
+            let batch: u64 = if table.is_some() { 1 << 23 } else { 1 << 20 };
+            let low_mask: u64 = if extranonce_bits == 0 { u64::MAX } else { (1u64 << (64 - extranonce_bits)) - 1 };
+            let start = extranonce_high | (counter & low_mask);
+            let found = match &table {
+                Some(t) => t.search(&j.msg, &j.target, start, batch),
+                None => crate::gpu::cuda_autolykos_search(&j.msg, j.height, j.n, &j.target, start, batch),
+            };
+            if let Some(nonce) = found {
+                shared.submitted.fetch_add(1, Ordering::Relaxed);
+                // Submit only the miner's own nonce bytes (extranonce2); the pool
+                // prepends the extranonce it assigned. Width = (64 - extranonce_bits)/4
+                // hex chars (full 16 hex when there's no extranonce).
+                let miner = nonce & low_mask;
+                let width = ((64 - extranonce_bits) / 4).max(1) as usize;
+                let extranonce2 = format!("{miner:0width$x}"); // miner's own nonce bytes
+                let full_hex = format!("{nonce:016x}");
+                submit_id += 1;
+                // This stratum's submit is [worker, jobId, extraNonce2, nTime, nonce];
+                // the pool rebuilds the real nonce = extranonce1 ++ extraNonce2.
+                let params = json!([user, j.job_id, extranonce2, "", full_hex]);
+                if std::env::var("KAIROS_ERG_DEBUG").is_ok() {
+                    eprintln!("[submit] {params}  (fullnonce={nonce:016x} extranonce={extranonce_high:016x})");
+                }
+                let _ = send(submit_id, "mining.submit", params);
+            }
+            counter = counter.wrapping_add(batch);
+            hashed += batch;
+            let rate = hashed as f64 / started.elapsed().as_secs_f64().max(1e-6);
+            shared.hashrate_mhs.store((rate * 1000.0) as u64, Ordering::Relaxed);
+        }
+        Ok(())
+    })();
+
+    shared.connected.store(false, Ordering::SeqCst);
+    result
+}
+
+fn parse_extranonce(hex: &str) -> Option<(u64, u32)> {
+    let bytes = crate::stratum::from_hex(hex)?;
+    if bytes.is_empty() || bytes.len() > 6 {
+        return None;
+    }
+    let mut val = 0u64;
+    for b in &bytes {
+        val = (val << 8) | *b as u64;
+    }
+    Some((val, (bytes.len() * 8) as u32))
+}
+
+/// Parse a `mining.notify` params array into a resolved job (jobId, msg, height→N,
+/// and the pool's explicit target `b`).
+fn parse_job(params: &Value) -> Option<ErgJob> {
+    let arr = params.as_array()?;
+    let job_id = arr.first()?.as_str()?.to_string();
+    let mut height = 0u32;
+    for x in arr.iter().skip(1) {
+        if let Some(h) = x.as_u64() {
+            height = h as u32;
+            break;
+        }
+        if let Some(h) = x.as_str().and_then(|s| s.parse::<u32>().ok()) {
+            height = h;
+            break;
+        }
+    }
+    let mut msg = [0u8; 32];
+    let mut got_msg = false;
+    for x in arr.iter() {
+        if let Some(s) = x.as_str() {
+            if s.len() == 64 {
+                if let Some(b) = crate::stratum::from_hex(s) {
+                    msg.copy_from_slice(&b);
+                    got_msg = true;
+                }
+            }
+        }
+    }
+    if !got_msg || height == 0 {
+        return None;
+    }
+    // Target: the pool's explicit decimal `b`, else diff-1.
+    let mut target = [0u8; 32];
+    let mut got_target = false;
+    for x in arr.iter() {
+        if let Some(s) = x.as_str() {
+            if s.len() >= 20 && s.bytes().all(|c| c.is_ascii_digit()) {
+                if let Some(t) = decimal_to_be32(s) {
+                    target = t;
+                    got_target = true;
+                }
+            }
+        }
+    }
+    if !got_target {
+        target = difficulty_to_target(1.0);
+    }
+    Some(ErgJob { job_id, msg, height, n: autolykos::calc_n(height), target })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

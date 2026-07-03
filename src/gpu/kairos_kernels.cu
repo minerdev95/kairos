@@ -441,6 +441,86 @@ __global__ void k_autolykos_search(const uint8_t* msg32, unsigned int height, un
   if(cmp<=0){ if(atomicCAS(found,0,1)==0) *out_nonce=nonce; }
 }
 
+// ── Precomputed element table (the memory-hard core; ~100x faster than on-the-fly).
+// Elements are stored packed at 31 bytes each = N*31 bytes.
+__global__ void k_al_gen_table(uint8_t* table, unsigned long long N, unsigned int height){
+  unsigned long long i = (unsigned long long)blockIdx.x*blockDim.x + threadIdx.x;
+  if(i>=N) return;
+  uint8_t h4[4]; h4[0]=(height>>24)&0xff; h4[1]=(height>>16)&0xff; h4[2]=(height>>8)&0xff; h4[3]=height&0xff;
+  uint8_t e[31]; al_element((uint32_t)i, h4, e);
+  unsigned long long off=i*31ULL;
+  #pragma unroll
+  for(int k=0;k<31;k++) table[off+k]=e[k];
+}
+__device__ __forceinline__ void al_read_elem(const uint8_t* table, uint32_t idx, uint8_t out31[31]){
+  unsigned long long off=(unsigned long long)idx*31ULL;
+  #pragma unroll
+  for(int k=0;k<31;k++) out31[k]=table[off+k];
+}
+__device__ void al_hit_table(const uint8_t* msg32, const uint8_t* nonce8, uint32_t height, uint64_t N,
+                             const uint8_t* table, uint8_t out32[32]){
+  uint8_t b0[40];
+  for(int i=0;i<32;i++) b0[i]=msg32[i];
+  for(int i=0;i<8;i++) b0[32+i]=nonce8[i];
+  uint8_t hh[32]; al_blake(b0, 40, hh, 32);
+  uint64_t prei8=0; for(int i=0;i<8;i++) prei8=(prei8<<8)|hh[24+i];
+  uint32_t ival=(uint32_t)(prei8 % N);
+  uint8_t f31[31]; al_read_elem(table, ival, f31);
+  uint8_t seed[71];
+  for(int i=0;i<31;i++) seed[i]=f31[i];
+  for(int i=0;i<32;i++) seed[31+i]=msg32[i];
+  for(int i=0;i<8;i++) seed[63+i]=nonce8[i];
+  uint32_t idxs[32]; al_indexes(seed, 71, N, idxs);
+  uint8_t sum[32]; for(int i=0;i<32;i++) sum[i]=0;
+  for(int k=0;k<32;k++){ uint8_t e[31]; al_read_elem(table, idxs[k], e); al_add(sum, e); }
+  al_blake(sum, 32, out32, 32);
+}
+__global__ void k_al_search_table(const uint8_t* msg32, unsigned int height, unsigned long long N,
+                                  const uint8_t* table, const uint8_t* target32, unsigned long long start,
+                                  unsigned long long count, unsigned long long* out_nonce, int* found){
+  unsigned long long i = (unsigned long long)blockIdx.x*blockDim.x + threadIdx.x;
+  if(i>=count) return;
+  unsigned long long nonce = start + i;
+  uint8_t n8[8]; al_nonce_be(nonce, n8);
+  uint8_t hit[32]; al_hit_table(msg32, n8, height, N, table, hit);
+  int cmp=0;
+  for(int j=0;j<32;j++){ if(hit[j]<target32[j]){cmp=-1;break;} if(hit[j]>target32[j]){cmp=1;break;} }
+  if(cmp<=0){ if(atomicCAS(found,0,1)==0) *out_nonce=nonce; }
+}
+// Allocate the N*31-byte table on the GPU; returns a device-pointer handle (0 = OOM).
+extern "C" unsigned long long kairos_cuda_autolykos_table_alloc(unsigned long long N){
+  uint8_t* d=0; size_t sz=(size_t)N*31ULL;
+  if(cudaMalloc(&d, sz)!=cudaSuccess) return 0ULL;
+  return (unsigned long long)d;
+}
+extern "C" int kairos_cuda_autolykos_table_gen(unsigned long long handle, unsigned int height, unsigned long long N){
+  if(!handle) return 0;
+  int threads=256; unsigned long long blocks=(N+threads-1)/threads;
+  k_al_gen_table<<<(unsigned int)blocks,threads>>>((uint8_t*)handle, N, height);
+  cudaDeviceSynchronize();
+  return cudaGetLastError()==cudaSuccess?1:0;
+}
+extern "C" void kairos_cuda_autolykos_table_free(unsigned long long handle){ if(handle) cudaFree((void*)handle); }
+extern "C" int kairos_cuda_autolykos_search_table(const unsigned char* msg32, unsigned int height,
+    unsigned long long N, unsigned long long handle, const unsigned char* target32,
+    unsigned long long start, unsigned long long count, unsigned long long* out_nonce){
+  uint8_t *d_msg=0,*d_tgt=0; unsigned long long* d_nonce=0; int* d_found=0;
+  cudaMalloc(&d_msg,32); cudaMalloc(&d_tgt,32);
+  cudaMalloc(&d_nonce,sizeof(unsigned long long)); cudaMalloc(&d_found,4);
+  cudaMemcpy(d_msg,msg32,32,cudaMemcpyHostToDevice);
+  cudaMemcpy(d_tgt,target32,32,cudaMemcpyHostToDevice);
+  cudaMemset(d_found,0,4); cudaMemset(d_nonce,0,sizeof(unsigned long long));
+  int threads=128; unsigned long long blocks=(count+threads-1)/threads;
+  k_al_search_table<<<(unsigned int)blocks,threads>>>(d_msg,height,N,(const uint8_t*)handle,d_tgt,start,count,d_nonce,d_found);
+  cudaDeviceSynchronize();
+  int found=0; unsigned long long nonce=0;
+  cudaMemcpy(&found,d_found,4,cudaMemcpyDeviceToHost);
+  cudaMemcpy(&nonce,d_nonce,sizeof(unsigned long long),cudaMemcpyDeviceToHost);
+  cudaFree(d_msg); cudaFree(d_tgt); cudaFree(d_nonce); cudaFree(d_found);
+  if(found){ *out_nonce=nonce; return 1; }
+  return 0;
+}
+
 extern "C" int kairos_cuda_autolykos_hit(const unsigned char* msg32, unsigned long long nonce,
     unsigned int height, unsigned long long N, unsigned char* out_hit32){
   uint8_t *d_msg=0,*d_out=0;

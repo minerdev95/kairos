@@ -230,6 +230,16 @@ fn main() {
         "erg-selftest" => {
             print_erg_selftest();
         }
+        "erg-mine" => {
+            let url = args.get(1).cloned();
+            let wallet = args.get(2).cloned();
+            let secs: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(180);
+            match (url, wallet) {
+                (Some(u), Some(w)) if consent => print_erg_mine(&u, &w, secs),
+                (Some(_), Some(_)) => eprintln!("`erg-mine` submits REAL shares to the pool — re-run with --yes to confirm."),
+                _ => eprintln!("usage: kairos erg-mine <stratum-url> <ergo-wallet[.worker]> [seconds] --yes"),
+            }
+        }
         "erg-verify" | "erg-probe" => {
             let url = args.get(1).cloned();
             let user = args.get(2).cloned();
@@ -520,6 +530,12 @@ fn print_miners() {
             println!("  {:<12} {:<10} {:<8} {:<8}  {}", algo, "core✓", "next", "CORE VERIFIED", coins);
             continue;
         }
+        if algo == "Autolykos2" {
+            // KAT-verified PoW + live-verified stratum + GPU table kernel — real
+            // accepted shares confirmed on herominers (RTX 4070). GPU-only.
+            println!("  {:<12} {:<10} {:<8} {:<8}  {}", algo, "GPU✓", "yes", "MINEABLE(GPU)", coins);
+            continue;
+        }
         match PowKind::from_algo(algo) {
             Some(k) if k.pool_experimental() => {
                 println!("  {:<12} {:<10} {:<8} {:<8}  {}", algo, "yes", "exp.", "EXPERIMENTAL", coins)
@@ -542,6 +558,9 @@ fn print_miners() {
     } else {
         println!("  GPU (KAS)   : exact CUDA kHeavyHash kernel available — build --features gpu.");
     }
+    println!("  MINEABLE (GPU): Autolykos2 (ERG) — KAT-verified PoW + live stratum + CUDA table");
+    println!("                kernel (~20 MH/s on an RTX 4070). ACCEPTED shares confirmed on a");
+    println!("                real pool. Build --features gpu, then: kairos erg-mine <url> <wallet> --yes");
     println!("  CORE VERIFIED: Ethash/Etchash (ETC) — the biggest GPU algorithm. KAIROS's own");
     println!("                pure-Rust hash matches the official go-ethereum KAT exactly");
     println!("                (Keccak-512 + cache + hashimoto). Etchash epochs (ECIP-1099)");
@@ -675,6 +694,61 @@ fn print_poolcheck(url: &str, user: &str) {
             println!("  connect/handshake failed: {e}");
             println!("  check the URL/port, or the pool may use a protocol KAIROS doesn't support yet.");
         }
+    }
+}
+
+/// Bounded live Ergo mining run — GPU-searches nonces and submits shares to the pool,
+/// reporting accept/reject so we can confirm the ERG path end-to-end on real hardware.
+fn print_erg_mine(url: &str, wallet: &str, secs: u64) {
+    use kairos::engine::SessionShared;
+    use kairos::gpu;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    println!("ERG LIVE MINE  (Autolykos2 on GPU — submits REAL shares, {secs}s run)");
+    println!("  url    : {url}");
+    println!("  wallet : {wallet}\n");
+    if !gpu::gpu_feature_enabled() {
+        println!("  this binary has no GPU backend — rebuild with `--features gpu`.");
+        return;
+    }
+    let shared = Arc::new(SessionShared::default());
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let (u, w, sh) = (url.to_string(), wallet.to_string(), shared.clone());
+    let handle = std::thread::spawn(move || kairos::erg::run(&u, &w, "x", &sh, Some(deadline)));
+    let start = Instant::now();
+    while start.elapsed().as_secs() < secs {
+        std::thread::sleep(Duration::from_secs(5));
+        println!(
+            "  [{:3}s] connected={} hashrate={} submitted={} accepted={} rejected={}",
+            start.elapsed().as_secs(),
+            shared.connected.load(Ordering::Relaxed),
+            hh(shared.hashrate()),
+            shared.submitted.load(Ordering::Relaxed),
+            shared.accepted.load(Ordering::Relaxed),
+            shared.rejected.load(Ordering::Relaxed),
+        );
+    }
+    shared.stop.store(true, Ordering::SeqCst);
+    let res = handle.join().ok();
+    let acc = shared.accepted.load(Ordering::Relaxed);
+    let rej = shared.rejected.load(Ordering::Relaxed);
+    let sub = shared.submitted.load(Ordering::Relaxed);
+    println!("\n  RESULT: submitted {sub}, accepted {acc}, rejected {rej}");
+    if let Some(Err(e)) = res {
+        println!("  session ended: {e}");
+    }
+    if let Ok(err) = shared.last_error.lock() {
+        if let Some(e) = err.as_ref() {
+            println!("  last pool message: {e}");
+        }
+    }
+    if acc > 0 {
+        println!("  ✓ ERG shares ACCEPTED — Ergo GPU mining is VERIFIED end-to-end on this card.");
+    } else if rej > 0 {
+        println!("  ✗ shares submitted but REJECTED — likely a submit-format tweak (share this output).");
+    } else {
+        println!("  … no shares in {secs}s yet (share difficulty vs on-the-fly hashrate). Try a longer run.");
     }
 }
 

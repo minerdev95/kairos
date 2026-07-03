@@ -51,8 +51,18 @@ that shows exactly what KAIROS *would* mine and why. To actually mine, you add t
 | **BTC · BCH · DGB** (SHA‑256) | KAIROS's own engine | ✅ Works today |
 | **LTC · DOGE · DGB** (scrypt) | KAIROS's own engine | ✅ Works today |
 | **KAS** (Kaspa / kHeavyHash) | KAIROS's own engine | ⚠️ Experimental — verify first (below) |
-| **ETC** (Ethereum Classic / Etchash) | KAIROS's own engine | 🧪 Algorithm verified — GPU mining coming |
-| ERG · RVN · XMR | — | 🔜 On the roadmap |
+| **ERG** (Ergo / Autolykos2) | KAIROS's own engine (GPU) | ✅ **Mining — accepted shares confirmed** on an RTX 4070 |
+| **ETC** (Ethereum Classic / Etchash) | KAIROS's own engine | 🧪 Algorithm verified — 8 GB cards can't hold the DAG |
+| RVN · XMR | — | 🔜 On the roadmap |
+
+**Ergo (ERG)** is fully working on GPUs: KAIROS's own Autolykos2 (proven against Ergo's
+official test vector), its own Ergo stratum client, and its own CUDA kernel — mining live
+at ~20 MH/s on an 8 GB RTX 4070 with shares accepted by the pool. Build with
+`--features gpu` (needs the CUDA toolkit), then:
+```
+kairos erg-selftest                                  # proves the GPU kernel vs the KAT
+kairos erg-mine stratum+tcp://POOL:PORT 9yourErgoAddr.rig --yes
+```
 
 *Ethereum Classic is the **biggest GPU‑mined coin**. KAIROS's own Ethash/Etchash
 implementation is proven correct against Ethereum's official test vector; the remaining

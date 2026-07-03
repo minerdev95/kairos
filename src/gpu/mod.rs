@@ -62,6 +62,28 @@ pub fn cuda_autolykos_search(msg: &[u8; 32], height: u32, n: u64, target: &[u8; 
     }
 }
 
+/// A precomputed Autolykos2 element table living in GPU memory — the memory-hard
+/// core that makes Ergo mining fast (tens of MH/s vs ~0.4 MH/s on the fly). Built
+/// once per block height; `None` if it can't be allocated (card too small) or without
+/// the `gpu` feature — callers then fall back to [`cuda_autolykos_search`].
+#[cfg(feature = "gpu")]
+pub use imp::AutolykosTable;
+
+#[cfg(not(feature = "gpu"))]
+pub struct AutolykosTable {
+    pub height: u32,
+    pub n: u64,
+}
+#[cfg(not(feature = "gpu"))]
+impl AutolykosTable {
+    pub fn new(_height: u32, _n: u64) -> Option<Self> {
+        None
+    }
+    pub fn search(&self, _msg: &[u8; 32], _target: &[u8; 32], _start: u64, _count: u64) -> Option<u64> {
+        None
+    }
+}
+
 /// Search a u64 nonce range for a Kaspa share on the GPU using the EXACT Kaspa
 /// kHeavyHash kernel, with the rank-64 job matrix precomputed on the host. Returns
 /// the winning nonce ONLY after re-verifying it on the CPU (so a miscompiled kernel
@@ -134,6 +156,63 @@ mod imp {
             count: u64,
             out_nonce: *mut u64,
         ) -> i32;
+        fn kairos_cuda_autolykos_table_alloc(n: u64) -> u64;
+        fn kairos_cuda_autolykos_table_gen(handle: u64, height: u32, n: u64) -> i32;
+        fn kairos_cuda_autolykos_table_free(handle: u64);
+        fn kairos_cuda_autolykos_search_table(
+            msg32: *const u8,
+            height: u32,
+            n: u64,
+            handle: u64,
+            target32: *const u8,
+            start: u64,
+            count: u64,
+            out_nonce: *mut u64,
+        ) -> i32;
+    }
+
+    /// GPU-resident Autolykos2 element table (freed on drop).
+    pub struct AutolykosTable {
+        handle: u64,
+        pub height: u32,
+        pub n: u64,
+    }
+
+    impl AutolykosTable {
+        pub fn new(height: u32, n: u64) -> Option<Self> {
+            let handle = unsafe { kairos_cuda_autolykos_table_alloc(n) };
+            if handle == 0 {
+                return None; // out of GPU memory
+            }
+            let ok = unsafe { kairos_cuda_autolykos_table_gen(handle, height, n) };
+            if ok != 1 {
+                unsafe { kairos_cuda_autolykos_table_free(handle) };
+                return None;
+            }
+            Some(AutolykosTable { handle, height, n })
+        }
+
+        pub fn search(&self, msg: &[u8; 32], target: &[u8; 32], start: u64, count: u64) -> Option<u64> {
+            let mut nonce: u64 = 0;
+            let hit = unsafe {
+                kairos_cuda_autolykos_search_table(msg.as_ptr(), self.height, self.n, self.handle, target.as_ptr(), start, count, &mut nonce)
+            };
+            if hit != 1 {
+                return None;
+            }
+            let h = crate::autolykos::hit(msg, &nonce.to_be_bytes(), self.height, self.n);
+            if &h <= target {
+                Some(nonce)
+            } else {
+                None
+            }
+        }
+    }
+
+    impl Drop for AutolykosTable {
+        fn drop(&mut self) {
+            unsafe { kairos_cuda_autolykos_table_free(self.handle) };
+        }
     }
 
     /// One Autolykos2 hit on the GPU (self-test).
