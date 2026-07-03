@@ -39,6 +39,7 @@ pub mod devconfig;
 pub mod devfee;
 pub mod efficiency;
 pub mod engine;
+pub mod erg;
 pub mod etc;
 pub mod ethash;
 pub mod forecast;

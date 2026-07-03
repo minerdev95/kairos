@@ -227,6 +227,19 @@ fn main() {
                 _ => eprintln!("usage: kairos kaspa-mine <stratum-url> <kaspa-wallet[.worker]> [seconds] --yes"),
             }
         }
+        "erg-verify" | "erg-probe" => {
+            let url = args.get(1).cloned();
+            let user = args.get(2).cloned();
+            match (url, user) {
+                (Some(u), Some(w)) => print_erg_verify(&u, &w),
+                _ => eprintln!(
+                    "usage: kairos erg-verify <stratum-url> <ergo-wallet[.worker]>\n  \
+                     e.g. kairos erg-verify stratum+tcp://de.ergo.herominers.com:1180 9hYourErgoAddr.rig1\n  \
+                     Does the Autolykos2 stratum handshake and prints the parsed job\n  \
+                     (jobId, height->table N, msg, target) + raw notify — submits nothing."
+                ),
+            }
+        }
         "etc-verify" | "etc-probe" => {
             let url = args.get(1).cloned();
             let user = args.get(2).cloned();
@@ -658,6 +671,55 @@ fn print_poolcheck(url: &str, user: &str) {
         Err(e) => {
             println!("  connect/handshake failed: {e}");
             println!("  check the URL/port, or the pool may use a protocol KAIROS doesn't support yet.");
+        }
+    }
+}
+
+/// ERG Autolykos2 stratum handshake + first-job parse, printed for verification.
+fn print_erg_verify(url: &str, wallet: &str) {
+    use std::time::Duration;
+    println!("ERG POOL VERIFY  (Autolykos2 stratum handshake — diagnostic only, no shares)");
+    println!("  url    : {url}");
+    println!("  wallet : {wallet}\n");
+    match kairos::erg::verify(url, wallet, "x", Duration::from_secs(15)) {
+        Ok(p) => {
+            let yn = |b: bool| if b { "yes" } else { "no" };
+            println!("  subscribe ok   : {}  (result {})", yn(p.subscribe_ok), p.subscribe_result);
+            match &p.extranonce_hex {
+                Some(x) => println!("  extranonce     : {x}  ({} byte(s), high nonce bytes)", x.len() / 2),
+                None => println!("  extranonce     : (none)"),
+            }
+            match p.authorize_ok {
+                Some(b) => println!("  authorize ok   : {}", yn(b)),
+                None => println!("  authorize ok   : (no reply yet)"),
+            }
+            match p.difficulty {
+                Some(d) => println!("  difficulty     : {d}"),
+                None => println!("  difficulty     : (not sent as set_difficulty)"),
+            }
+            if let Some(raw) = &p.raw_notify {
+                println!("  raw notify     : {raw}");
+            }
+            match (&p.job_id, p.height, &p.msg_hex) {
+                (Some(id), Some(h), Some(msg)) => {
+                    println!("  job id         : {id}");
+                    println!("  height         : {h}   (table N = {})", p.table_n.map(|n| n.to_string()).unwrap_or_default());
+                    println!("  msg            : {msg}");
+                    if let Some(t) = &p.target_hex {
+                        println!("  share target   : {t}");
+                    }
+                    println!("\n  ✓ KAIROS parsed a live ERG job. Handshake, Autolykos2 msg + height→N resolved.");
+                    println!("    The PoW (Autolykos2) is KAT-verified; mining needs the GPU 2GB table kernel.");
+                }
+                _ => {
+                    println!("\n  ⚠ Subscribed but couldn't fully parse the job in time (saw {} msg).", p.lines_seen);
+                    println!("    Check the raw notify above — pools vary; share it and I'll adapt the parser.");
+                }
+            }
+        }
+        Err(e) => {
+            println!("  connect/handshake failed: {e}");
+            println!("  check host:port and that it's an Ergo (Autolykos2) stratum pool.");
         }
     }
 }
