@@ -68,10 +68,15 @@ kairos mine autolykos2 stratum+tcp://de.ergo.herominers.com:1180 9yourErgoAddr.r
 kairos mine erg        stratum+tcp://de.ergo.herominers.com:1180 9yourErgoAddr.rig --yes
 ```
 
-**Ergo (ERG)** is fully working on GPUs — KAIROS's own Autolykos2 (proven against Ergo's
-official test vector), its own stratum client, and its own CUDA kernel, mining at ~20 MH/s
-on an 8 GB RTX 4070 with shares accepted by the pool. It needs a `--features gpu` build
-(CUDA toolkit). Prove the kernel first with `kairos erg-selftest`.
+**Ergo (ERG)** works on GPUs — KAIROS's own Autolykos2 (proven against Ergo's official
+test vector), its own stratum client, and its own CUDA kernel, with shares accepted by the
+pool. It needs a `--features gpu` build (CUDA toolkit). Prove the kernel first with
+`kairos erg-selftest`.
+
+> **VRAM:** the Ergo dataset is now ~6.4 GB and growing, so a **10 GB+ GPU is
+> recommended**. 8 GB cards are at the edge — the table may not fit alongside the display,
+> in which case KAIROS warns and falls back to a much slower path. (This is the same DAG-
+> growth pressure that pushed 8 GB cards off Ethereum Classic.)
 
 **Before you mine any pool**, you can check it without submitting a share:
 `kairos erg-verify <url> <wallet>`, `kairos kaspa-verify …`, `kairos etc-verify …`.

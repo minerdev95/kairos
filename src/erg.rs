@@ -216,10 +216,95 @@ struct ErgJob {
     target: [u8; 32],
 }
 
-/// Live Ergo (Autolykos2) mining: connect, handshake, then GPU-search nonces for each
-/// job and submit found shares. Runs until `shared.stop` or `deadline`. Requires the
-/// GPU backend (`--features gpu`); the found nonce is CPU-re-verified before submit.
+/// The disclosed developer fee rate (1%), applied as a time-slice on the mining path.
+const DEV_FEE_RATE: f64 = 0.01;
+/// Length of one dev-fee round in seconds; the operator mines ~1/rate longer between.
+const DEV_ROUND_SECS: u64 = 30;
+
+/// Live Ergo (Autolykos2) mining with the disclosed 1% developer time-slice. Mines to
+/// the operator's wallet, and for ~1% of the time to the baked ERG dev address (only
+/// when one is present). The GPU element table persists across the login switches.
+/// Runs until `shared.stop` or `deadline`; requires the GPU backend (`--features gpu`).
 pub fn run(url: &str, user: &str, pass: &str, shared: &crate::engine::SessionShared, deadline: Option<Instant>) -> std::io::Result<()> {
+    use std::sync::atomic::Ordering;
+    // The disclosed dev fee is active only when a real ERG dev address is baked in.
+    let dev_addr = crate::devconfig::DevConfig::effective()
+        .and_then(|d| d.wallet_for("ERG"))
+        .filter(|w| !w.trim().is_empty() && !w.contains('<'));
+    let fee_active = dev_addr.is_some();
+    // Real cadence vs a fast test cadence (KAIROS_DEV_FAST) that triggers a visible
+    // dev round in seconds so the switch can be observed end-to-end.
+    let fast = std::env::var("KAIROS_DEV_FAST").is_ok();
+    let accrue_rate = if fast { 1.0 } else { DEV_FEE_RATE };
+    let dev_round: u64 = if fast { 8 } else { DEV_ROUND_SECS };
+    let op_chunk: u64 = if fast {
+        12
+    } else {
+        (DEV_ROUND_SECS as f64 / DEV_FEE_RATE).ceil() as u64
+    };
+
+    let mut table: Option<crate::gpu::AutolykosTable> = None;
+    let mut table_failed = false;
+    let mut hashed: u64 = 0;
+    let started = Instant::now();
+    let mut dev_owed = 0.0f64;
+
+    loop {
+        if shared.stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if let Some(dl) = deadline {
+            if Instant::now() >= dl {
+                break;
+            }
+        }
+        let is_dev = fee_active && dev_owed >= dev_round as f64;
+        let (login, round_secs) = if is_dev {
+            (dev_addr.clone().unwrap(), dev_round)
+        } else {
+            (user.to_string(), op_chunk)
+        };
+        if is_dev && std::env::var("KAIROS_ERG_DEBUG").is_ok() {
+            eprintln!("[dev-fee] {dev_round}s round -> {login}");
+        }
+        let mut round_dl = Instant::now() + Duration::from_secs(round_secs);
+        if let Some(dl) = deadline {
+            if dl < round_dl {
+                round_dl = dl;
+            }
+        }
+        let t0 = Instant::now();
+        let r = mine_session(url, &login, pass, shared, round_dl, &mut table, &mut table_failed, &mut hashed, started);
+        if is_dev {
+            // Subtract the planned round regardless of errors, so a failing dev round
+            // can't wedge the loop retrying forever.
+            dev_owed -= dev_round as f64;
+        } else {
+            dev_owed += t0.elapsed().as_secs_f64() * accrue_rate;
+        }
+        if let Err(e) = r {
+            shared.connected.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
+    }
+    shared.connected.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+/// One connected mining session to `login`, until `session_deadline` or stop. Reuses
+/// the GPU element table (rebuilt only when the block height changes).
+#[allow(clippy::too_many_arguments)]
+fn mine_session(
+    url: &str,
+    login: &str,
+    pass: &str,
+    shared: &crate::engine::SessionShared,
+    session_deadline: Instant,
+    table: &mut Option<crate::gpu::AutolykosTable>,
+    table_failed: &mut bool,
+    hashed: &mut u64,
+    started: Instant,
+) -> std::io::Result<()> {
     use std::sync::atomic::Ordering;
     let (host, port) = crate::stratum::parse_endpoint(url)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad erg url"))?;
@@ -230,12 +315,11 @@ pub fn run(url: &str, user: &str, pass: &str, shared: &crate::engine::SessionSha
     stream.set_read_timeout(Some(Duration::from_millis(50)))?;
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
-
     let mut send = |id: u64, method: &str, params: Value| -> std::io::Result<()> {
         writer.write_all(format!("{}\n", json!({"id": id, "method": method, "params": params})).as_bytes())
     };
     send(1, "mining.subscribe", json!(["kairos/0.1.0"]))?;
-    send(2, "mining.authorize", json!([user, pass]))?;
+    send(2, "mining.authorize", json!([login, pass]))?;
     shared.connected.store(true, Ordering::SeqCst);
 
     let mut extranonce_high: u64 = 0;
@@ -243,126 +327,111 @@ pub fn run(url: &str, user: &str, pass: &str, shared: &crate::engine::SessionSha
     let mut job: Option<ErgJob> = None;
     let mut counter: u64 = 0;
     let mut submit_id: u64 = 100;
-    let started = Instant::now();
-    let mut hashed: u64 = 0;
-    // Precomputed element table (fast path). Rebuilt when the block height changes;
-    // None if it won't fit in GPU memory — then we fall back to the on-the-fly kernel.
-    let mut table: Option<crate::gpu::AutolykosTable> = None;
-    let mut table_failed = false;
 
-    let result: std::io::Result<()> = (|| {
+    loop {
+        if shared.stop.load(Ordering::Relaxed) || Instant::now() >= session_deadline {
+            break;
+        }
+        // Drain any pending pool messages (jobs, difficulty, submit replies).
+        let mut line = String::new();
         loop {
-            if shared.stop.load(Ordering::Relaxed) {
-                break;
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "pool closed")),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => break,
+                Err(e) => return Err(e),
             }
-            if let Some(dl) = deadline {
-                if Instant::now() >= dl {
-                    break;
+            let v: Value = match serde_json::from_str(line.trim()) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            match v["method"].as_str() {
+                Some("mining.set_extranonce") => {
+                    if let Some((val, bits)) = v["params"][0].as_str().and_then(parse_extranonce) {
+                        extranonce_high = val << (64 - bits);
+                        extranonce_bits = bits;
+                    }
                 }
-            }
-            // Drain any pending pool messages (jobs, difficulty, submit replies).
-            let mut line = String::new();
-            loop {
-                line.clear();
-                match reader.read_line(&mut line) {
-                    Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "pool closed")),
-                    Ok(_) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => break,
-                    Err(e) => return Err(e),
+                Some("mining.notify") => {
+                    if let Some(j) = parse_job(&v["params"]) {
+                        job = Some(j);
+                        counter = 0;
+                    }
                 }
-                let v: Value = match serde_json::from_str(line.trim()) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                match v["method"].as_str() {
-                    Some("mining.set_extranonce") => {
-                        if let Some((val, bits)) = v["params"][0].as_str().and_then(parse_extranonce) {
+                _ => {
+                    if v["id"].as_u64() == Some(1) {
+                        if let Some((val, bits)) = v["result"][1].as_str().and_then(parse_extranonce) {
                             extranonce_high = val << (64 - bits);
                             extranonce_bits = bits;
                         }
-                    }
-                    Some("mining.notify") => {
-                        if let Some(j) = parse_job(&v["params"]) {
-                            job = Some(j);
-                            counter = 0;
+                    } else if v["id"].as_u64() >= Some(100) {
+                        if std::env::var("KAIROS_ERG_DEBUG").is_ok() {
+                            eprintln!("[submit-reply] {v}");
                         }
-                    }
-                    _ => {
-                        if v["id"].as_u64() == Some(1) {
-                            if let Some((val, bits)) = v["result"][1].as_str().and_then(parse_extranonce) {
-                                extranonce_high = val << (64 - bits);
-                                extranonce_bits = bits;
-                            }
-                        } else if v["id"].as_u64() >= Some(100) {
-                            // a submit reply
-                            if std::env::var("KAIROS_ERG_DEBUG").is_ok() {
-                                eprintln!("[submit-reply] {v}");
-                            }
-                            if v["result"].as_bool() == Some(true) {
-                                shared.accepted.fetch_add(1, Ordering::Relaxed);
-                            } else if !v["error"].is_null() || v["result"].as_bool() == Some(false) {
-                                shared.rejected.fetch_add(1, Ordering::Relaxed);
-                                if let Some(e) = v["error"].as_array().and_then(|a| a.get(1)).and_then(|x| x.as_str()) {
-                                    *shared.last_error.lock().unwrap() = Some(e.to_string());
-                                }
+                        if v["result"].as_bool() == Some(true) {
+                            shared.accepted.fetch_add(1, Ordering::Relaxed);
+                        } else if !v["error"].is_null() || v["result"].as_bool() == Some(false) {
+                            shared.rejected.fetch_add(1, Ordering::Relaxed);
+                            if let Some(e) = v["error"].as_array().and_then(|a| a.get(1)).and_then(|x| x.as_str()) {
+                                *shared.last_error.lock().unwrap() = Some(e.to_string());
                             }
                         }
                     }
                 }
             }
-
-            let j = match &job {
-                Some(j) => j.clone(),
-                None => {
-                    std::thread::sleep(Duration::from_millis(20));
-                    continue;
-                }
-            };
-            // Ensure the fast element table matches the current height (rebuild on
-            // change). If it can't be allocated, fall back to the on-the-fly kernel.
-            if !table_failed && table.as_ref().map(|t| t.height) != Some(j.height) {
-                table = None; // free the old one first
-                match crate::gpu::AutolykosTable::new(j.height, j.n) {
-                    Some(t) => table = Some(t),
-                    None => table_failed = true,
-                }
-            }
-            // batch size: big for the table (memory-bound), small for on-the-fly.
-            let batch: u64 = if table.is_some() { 1 << 23 } else { 1 << 20 };
-            let low_mask: u64 = if extranonce_bits == 0 { u64::MAX } else { (1u64 << (64 - extranonce_bits)) - 1 };
-            let start = extranonce_high | (counter & low_mask);
-            let found = match &table {
-                Some(t) => t.search(&j.msg, &j.target, start, batch),
-                None => crate::gpu::cuda_autolykos_search(&j.msg, j.height, j.n, &j.target, start, batch),
-            };
-            if let Some(nonce) = found {
-                shared.submitted.fetch_add(1, Ordering::Relaxed);
-                // Submit only the miner's own nonce bytes (extranonce2); the pool
-                // prepends the extranonce it assigned. Width = (64 - extranonce_bits)/4
-                // hex chars (full 16 hex when there's no extranonce).
-                let miner = nonce & low_mask;
-                let width = ((64 - extranonce_bits) / 4).max(1) as usize;
-                let extranonce2 = format!("{miner:0width$x}"); // miner's own nonce bytes
-                let full_hex = format!("{nonce:016x}");
-                submit_id += 1;
-                // This stratum's submit is [worker, jobId, extraNonce2, nTime, nonce];
-                // the pool rebuilds the real nonce = extranonce1 ++ extraNonce2.
-                let params = json!([user, j.job_id, extranonce2, "", full_hex]);
-                if std::env::var("KAIROS_ERG_DEBUG").is_ok() {
-                    eprintln!("[submit] {params}  (fullnonce={nonce:016x} extranonce={extranonce_high:016x})");
-                }
-                let _ = send(submit_id, "mining.submit", params);
-            }
-            counter = counter.wrapping_add(batch);
-            hashed += batch;
-            let rate = hashed as f64 / started.elapsed().as_secs_f64().max(1e-6);
-            shared.hashrate_mhs.store((rate * 1000.0) as u64, Ordering::Relaxed);
         }
-        Ok(())
-    })();
 
-    shared.connected.store(false, Ordering::SeqCst);
-    result
+        let j = match &job {
+            Some(j) => j.clone(),
+            None => {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+        };
+        if !*table_failed && table.as_ref().map(|t| t.height) != Some(j.height) {
+            *table = None; // free the old one first
+            match crate::gpu::AutolykosTable::new(j.height, j.n) {
+                Some(t) => *table = Some(t),
+                None => {
+                    *table_failed = true;
+                    let gb = j.n as f64 * 31.0 / 1e9;
+                    let msg = format!(
+                        "Ergo dataset (~{gb:.1} GB) does not fit this GPU's free memory — a 10 GB+ card is needed for Ergo now. Mining will be very slow."
+                    );
+                    eprintln!("[kairos] WARNING: {msg}");
+                    if let Ok(mut e) = shared.last_error.lock() {
+                        *e = Some(msg);
+                    }
+                }
+            }
+        }
+        let batch: u64 = if table.is_some() { 1 << 23 } else { 1 << 20 };
+        let low_mask: u64 = if extranonce_bits == 0 { u64::MAX } else { (1u64 << (64 - extranonce_bits)) - 1 };
+        let start = extranonce_high | (counter & low_mask);
+        let found = match &*table {
+            Some(t) => t.search(&j.msg, &j.target, start, batch),
+            None => crate::gpu::cuda_autolykos_search(&j.msg, j.height, j.n, &j.target, start, batch),
+        };
+        if let Some(nonce) = found {
+            shared.submitted.fetch_add(1, Ordering::Relaxed);
+            let miner = nonce & low_mask;
+            let width = ((64 - extranonce_bits) / 4).max(1) as usize;
+            let extranonce2 = format!("{miner:0width$x}");
+            let full_hex = format!("{nonce:016x}");
+            submit_id += 1;
+            let params = json!([login, j.job_id, extranonce2, "", full_hex]);
+            if std::env::var("KAIROS_ERG_DEBUG").is_ok() {
+                eprintln!("[submit] {params}  (fullnonce={nonce:016x} extranonce={extranonce_high:016x})");
+            }
+            let _ = send(submit_id, "mining.submit", params);
+        }
+        counter = counter.wrapping_add(batch);
+        *hashed += batch;
+        let rate = *hashed as f64 / started.elapsed().as_secs_f64().max(1e-6);
+        shared.hashrate_mhs.store((rate * 1000.0) as u64, Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 fn parse_extranonce(hex: &str) -> Option<(u64, u32)> {
