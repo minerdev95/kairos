@@ -745,7 +745,8 @@ fn print_mine(algo: &str, url: &str, wallet: &str, secs: u64) {
         Ethash,
         Unknown,
     }
-    let kind = match algo.trim().to_ascii_lowercase().as_str() {
+    let algo_lc = algo.trim().to_ascii_lowercase();
+    let kind = match algo_lc.as_str() {
         "autolykos2" | "autolykos" | "erg" | "ergo" => Kind::Auto,
         "kheavyhash" | "heavyhash" | "kaspa" | "kas" => Kind::Heavy,
         "sha256d" | "sha-256d" | "sha256" | "sha-256" | "btc" | "bitcoin" | "bch" | "dgb" => Kind::Sha,
@@ -787,9 +788,23 @@ fn print_mine(algo: &str, url: &str, wallet: &str, secs: u64) {
             Kind::Heavy => kairos::kaspa::run(&u, &w, "x", workers, &sh, Some(deadline)),
             Kind::Sha | Kind::Scrypt => {
                 let pow = if kind == Kind::Sha { PowKind::Sha256d } else { PowKind::Scrypt };
+                // Route the disclosed 1% to the baked dev address for the coin the user
+                // named (defaults: SHA-256d → BTC, scrypt → LTC).
+                let coin = match algo_lc.as_str() {
+                    "btc" | "bitcoin" => "BTC",
+                    "bch" => "BCH",
+                    "dgb" => "DGB",
+                    "doge" | "dogecoin" => "DOGE",
+                    "ltc" | "litecoin" => "LTC",
+                    _ if kind == Kind::Sha => "BTC",
+                    _ => "LTC",
+                };
                 let miner = NativeMiner::start(workers, None);
-                let r = PoolSession::run(&u, &w, "x", pow, &miner, "kairos/0.1.0", &sh, Some(deadline));
+                let r = kairos::devfee::time_slice::run_with_fee(coin, &w, &sh, Some(deadline), |login, round_dl| {
+                    PoolSession::run(&u, login, "x", pow, &miner, "kairos/0.1.0", &sh, Some(round_dl))
+                });
                 miner.stop();
+                sh.connected.store(false, Ordering::SeqCst);
                 r
             }
             _ => Ok(()),

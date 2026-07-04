@@ -54,9 +54,21 @@ struct FoundNonce {
     nonce: u64,
 }
 
-/// A full Kaspa mining session: connect, EthereumStratum handshake, spin worker
-/// threads searching u64 nonces, submit shares. Runs until `shared.stop`.
+/// Live Kaspa mining under the disclosed 1% developer time-slice: mines to the
+/// operator's login, and for ~1% of the time reconnects under the baked KAS dev address
+/// (only when one is present) so the pool credits the disclosed fee. Wraps
+/// [`run_session`], which is one connected mining session.
 pub fn run(url: &str, user: &str, pass: &str, workers: usize, shared: &SessionShared, deadline: Option<Instant>) -> std::io::Result<()> {
+    let r = crate::devfee::time_slice::run_with_fee("KAS", user, shared, deadline, |login, round_dl| {
+        run_session(url, login, pass, workers, shared, Some(round_dl))
+    });
+    shared.connected.store(false, std::sync::atomic::Ordering::SeqCst);
+    r
+}
+
+/// A full Kaspa mining session: connect, EthereumStratum handshake, spin worker
+/// threads searching u64 nonces, submit shares. Runs until `shared.stop` or `deadline`.
+pub fn run_session(url: &str, user: &str, pass: &str, workers: usize, shared: &SessionShared, deadline: Option<Instant>) -> std::io::Result<()> {
     let (host, port) = crate::stratum::parse_endpoint(url)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad kaspa url"))?;
     let addr = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port))?
