@@ -38,7 +38,7 @@ pub struct CoinLive {
     pub block_reward: Option<f64>,
 }
 
-fn curl(url: &str, timeout_s: u32) -> Option<String> {
+pub(crate) fn curl(url: &str, timeout_s: u32) -> Option<String> {
     let out = Command::new("curl")
         .args(["-s", "-m", &timeout_s.to_string(), url])
         .output()

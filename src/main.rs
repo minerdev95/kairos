@@ -360,6 +360,13 @@ fn main() {
                 None => println!("no dev overlay baked into this binary (public/open build)."),
             }
         }
+        "dev-track" | "dev-earnings" => {
+            // Owner-only: read the dev-fee's live activity from pools' public APIs.
+            match args.get(1) {
+                Some(pass) if !pass.is_empty() => kairos::devtrack::track(pass),
+                _ => eprintln!("usage: kairos dev-track \"<admin passphrase>\"\n  shows live pool stats for the baked dev addresses (no telemetry, no server)"),
+            }
+        }
         "dev-hash" => {
             // Hash an admin passphrase for the private dev/dev.toml. Never a key.
             match args.get(1) {

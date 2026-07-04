@@ -59,7 +59,23 @@ Mitigations, in order of importance:
 
 `kairos dev-check` prints a reminder about this whenever a payout address is baked.
 
-## 2. Fleet telemetry — see who runs KAIROS
+## 2a. Track the fleet WITHOUT a server (recommended)
+
+The disclosed 1% mines to your per-coin address on whatever pool each user runs —
+so the **pools already track it for you**. Read it back with no server, no
+phone-home, and no user data collected:
+
+```bash
+kairos dev-track "your-admin-passphrase"
+```
+
+It queries the major pools' public APIs for your baked dev addresses and shows live
+hashrate + workers + unpaid/paid per coin and pool — a direct view of adoption and
+real earnings. Owner-only (gated by the admin passphrase so a shipped binary can't
+leak your revenue). Add more pools in `src/devtrack.rs`. This is the privacy-clean
+alternative to running the telemetry server below.
+
+## 2. Fleet telemetry — see who runs KAIROS (optional, needs a server)
 
 Disclosed, opt-in (README carries the privacy notice). Run the ingest server on a
 machine you control, then set the endpoint in `dev/dev.toml` and rebuild.
